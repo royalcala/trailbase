@@ -1,0 +1,292 @@
+---
+title: libSQL, Turso and SQLite
+description: How TrailBase relates to libSQL, Turso, rusqlite and vanilla SQLite.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Short answer: TrailBase currently uses vanilla SQLite through
+[`rusqlite`](https://github.com/rusqlite/rusqlite), not libSQL or Turso.
+
+That was not always the case, though. Early TrailBase versions used libSQL's
+Rust bindings and the libSQL fork of SQLite. In v0.3.0 TrailBase switched to
+`rusqlite` plus upstream SQLite.
+
+## Current State
+
+Today TrailBase is built around:
+
+- upstream SQLite,
+- Rust bindings provided by `rusqlite`,
+- SQLite extensions such as `sqlite-vec`,
+- TrailBase's own `trailbase-sqlite` crate for connection orchestration.
+
+This is the stack used by the current codebase and described throughout the
+repository and docs.
+
+## Historical Note
+
+TrailBase's v0.3.0 changelog documents a major database-layer change:
+
+- it replaced libSQL Rust bindings with `rusqlite`,
+- it replaced the libSQL SQLite fork with vanilla SQLite,
+- it replaced libSQL vector search with `sqlite-vec`.
+
+This is why older references to libSQL may still appear in the changelog even
+though the current implementation does not depend on it.
+
+## Why TrailBase Switched
+
+The repo gives several explicit reasons for the switch.
+
+### 1. The Rust bindings were not a good fit
+
+TrailBase's changelog says the libSQL Rust bindings were "sub-par" and points
+out that even `libsql-server` itself relied on a forked `rusqlite` stack.
+
+For a project like TrailBase, the Rust-side integration quality matters a lot
+because the database layer is not hidden behind a remote service. It is part of
+the core runtime and touches migrations, extensions, realtime subscriptions,
+WASM integration, schema inspection and internal admin APIs.
+
+### 2. TrailBase needed SQLite hooks for realtime
+
+The changelog explicitly calls out missing `update_hooks` as a problem.
+
+That matters because TrailBase's realtime features depend on observing changes
+close to the database engine. Newer versions also make heavy use of SQLite's
+`pre-update` hook to power change subscriptions efficiently.
+
+<Aside type="note" title="Why hooks matter">
+  If a backend wants low-latency change subscriptions without polling, it helps
+  a lot to receive row-level change notifications directly from SQLite.
+</Aside>
+
+### 3. The execution model did not match TrailBase's concurrency goals
+
+TrailBase also says the libSQL execution model was not ideal for
+high-concurrency workloads.
+
+That lines up with the broader history of the repo: many later releases keep
+refining how reads, writes, locks, transactions and subscriptions interact.
+TrailBase cares a lot about squeezing concurrency out of an embedded database,
+so the execution model is not an implementation detail for this project.
+
+### 4. The libSQL fork was diverging from upstream SQLite
+
+Another reason given in the changelog is that the libSQL fork was falling
+behind upstream SQLite and missing ongoing SQLite development.
+
+TrailBase appears to prefer staying close to SQLite itself, especially because
+it leans on native SQLite behavior, extensions, parser tooling, hooks and
+vendor-neutral portability.
+
+### 5. The libSQL ecosystem focus was moving elsewhere
+
+The changelog also notes that libSQL's maintainers seemed more focused on
+`libsql-server` and Limbo.
+
+That does not mean those projects are bad. It means they were no longer the
+best center of gravity for TrailBase's embedded use case at that moment.
+
+### 6. The switch improved performance
+
+This was not only a maintainability decision. In the same v0.3.0 changelog,
+TrailBase reports that:
+
+- write performance roughly doubled,
+- read latency dropped to sub-millisecond levels.
+
+So from TrailBase's point of view, the switch also paid off in observable
+runtime behavior.
+
+## What Each Piece Is
+
+These names are easy to conflate, but they refer to different layers.
+
+### SQLite
+
+SQLite is the upstream database engine.
+
+When TrailBase says it uses vanilla SQLite, it means it uses the main upstream
+SQLite implementation rather than a fork.
+
+### rusqlite
+
+`rusqlite` is a Rust binding for SQLite.
+
+It is not a separate database engine. It is the Rust interface TrailBase uses
+to open connections, run queries, register functions, access hooks and interact
+with SQLite from Rust.
+
+### libSQL
+
+libSQL is a fork of SQLite with its own ecosystem and priorities.
+
+Historically, TrailBase used libSQL's fork plus its Rust bindings, then moved
+away from both in v0.3.0.
+
+### Turso
+
+Turso is the hosted database platform built around libSQL.
+
+So if the question is "does TrailBase use Turso?", the answer is no. TrailBase
+is not built on Turso's hosted architecture. It runs as an embedded backend on
+top of local SQLite databases.
+
+### Limbo
+
+Limbo is mentioned once in TrailBase's changelog as another fork/project in the
+broader libSQL orbit at the time.
+
+TrailBase does not use Limbo in the current codebase.
+
+## Practical Difference in Architecture
+
+The practical distinction is this:
+
+- TrailBase is optimized around embedding SQLite directly into the application runtime.
+- libSQL and Turso are more naturally associated with a distributed or service-oriented database story.
+
+That is why TrailBase's changelog talks less about "managed databases" and more
+about hooks, extensions, lock behavior, local execution models and close-to-the-metal
+SQLite integration.
+
+## Why This Matters for Users
+
+If you are evaluating TrailBase today, the important consequences are:
+
+- your data layer is plain SQLite,
+- SQLite tooling remains broadly applicable,
+- TrailBase tries to minimize lock-in by exposing or packaging SQLite-native capabilities,
+- the project is intentionally close to upstream SQLite rather than a forked runtime.
+
+This shows up elsewhere in the repo too. Over time TrailBase has invested in:
+
+- standalone SQLite extensions,
+- direct SQLite access patterns,
+- multi-DB support over SQLite files,
+- reducing dependence on `rusqlite` internals so additional drivers could be possible later.
+
+## Update hook vs. pre-update hook, and why that matters for realtime
+
+SQLite offers two different hook mechanisms. Understanding the difference
+clarifies why the switch from libSQL to rusqlite was a practical, feature-driven
+decision and not only about code quality.
+
+### The update hook
+
+`sqlite3_update_hook` fires **after** a row change is committed.
+It receives:
+
+- the type of operation: `INSERT`, `UPDATE` or `DELETE`,
+- the database name and table name,
+- the `rowid` of the changed row.
+
+That is all. You only know *which* row changed, not *what* the old or new
+values were.
+
+### The pre-update hook
+
+`sqlite3_preupdate_hook` fires **before** the change is written to disk.
+It receives the same basic information as the update hook, plus it gives you
+access to the complete old and new row values through an inspector API.
+
+This is the hook TrailBase actually uses. You can see it in
+`crates/core/src/records/subscribe/hook.rs`:
+
+```rust
+lock.preupdate_hook(Some(
+    move |action: Action, db: &str, table_name: &str, case: &PreUpdateCase| {
+        let Some(row_id) = extract_row_id(case) else { return; };
+        let Some(record) = extract_record_values(case) else { return; };
+
+        let event = PreupdateHookEvent {
+            action,
+            table_name: ...,
+            row_id,
+            record,  // <- full column values extracted HERE
+        };
+
+        sender.try_send((cnt, event));
+    },
+))
+```
+
+And `crates/trailbase-sqlite/src/sqlite/util.rs` shows what `extract_record_values`
+actually reads:
+
+```rust
+PreUpdateCase::Insert(accessor) =>
+    (0..accessor.get_column_count())
+        .map(|idx| accessor.get_new_column_value(idx))
+        .collect(),
+
+PreUpdateCase::Delete(accessor) =>
+    (0..accessor.get_column_count())
+        .map(|idx| accessor.get_old_column_value(idx))
+        .collect(),
+
+PreUpdateCase::Update { new_value_accessor, .. } =>
+    (0..new_value_accessor.get_column_count())
+        .map(|idx| new_value_accessor.get_new_column_value(idx))
+        .collect(),
+```
+
+It reads every column of the row, old and new, while still inside the hook.
+
+### Why this matters for realtime subscriptions
+
+TrailBase's realtime API lets clients subscribe to changes on a table or on a
+specific record and receive the changed data immediately, without polling.
+
+To make that work, TrailBase needs to push an event payload that includes the
+actual row data to every connected subscriber. That data must be captured
+**inside** the hook because:
+
+- by the time the update hook fires, the old row is already gone on
+  `DELETE`,
+- sending subscribers only a `rowid` would require a follow-up `SELECT`
+  per event, which is expensive and racy if the row is modified again or
+  deleted before the read.
+
+The pre-update hook solves both of those problems. It fires while the row is still
+in memory before it is written or erased, so old and new values are available
+at zero extra cost.
+
+### Why libSQL's bindings were a problem here
+
+The changelog note about "missing `update_hooks`" referred precisely to this.
+`rusqlite` exposes `preupdate_hook` as a first-class feature because it is part
+of the `libsqlite3-sys` `preupdate_hook` build feature. Without that, TrailBase
+would have had to:
+
+- issue an extra `SELECT rowid = ?` after every change event,
+- build its own diffing logic,
+- or not provide full row data in subscription events at all.
+
+Switching to `rusqlite` with `preupdate_hook` enabled let TrailBase capture the
+complete row state inline, which is how the current realtime system works.
+
+<Aside type="note" title="Performance implication">
+  The pre-update hook must be lightweight. TrailBase's `hook.rs` explicitly
+  comments "do as little work as possible here" and only enqueues the event
+  into a bounded `flume` channel. All filtering, access checks and fan-out to
+  subscribers happen later on a separate async task.
+</Aside>
+
+## Looking Forward
+
+Using `rusqlite` and vanilla SQLite today does not mean TrailBase is permanently
+hard-coded to that one exact stack forever.
+
+Recent changelog entries show active work to make `trailbase-sqlite`
+abstractions less leaky and less dependent on `rusqlite` internals, plus early
+proof-of-concept support for additional SQL connection types.
+
+So the current answer is clear, but the architecture is still evolving:
+
+- current implementation: upstream SQLite + `rusqlite`,
+- historical implementation: libSQL bindings + libSQL's SQLite fork,
+- current direction: keep TrailBase close to SQLite while making the DB layer
+  less tightly coupled over time.

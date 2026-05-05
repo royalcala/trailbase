@@ -1,0 +1,266 @@
+---
+title: Access Control (ACL)
+---
+
+import { Aside, Code } from "@astrojs/starlight/components";
+
+TrailBase's access control system has two layers that work together:
+
+1. **ACL global** — una matriz simple de *quién* puede realizar *qué operación* sobre una tabla completa.
+2. **Access rules** — condiciones SQL arbitrarias evaluadas fila por fila, request por request.
+
+El flujo es siempre: ACL global primero → si pasa, se evalúa el access rule (si está definido).
+
+---
+
+## Capa 1: ACL global
+
+Se configura en `config.textproto` con dos llaves:
+
+| Llave | Quién aplica |
+|---|---|
+| `acl_world` | Cualquier visitante, autenticado o no |
+| `acl_authenticated` | Usuarios con sesión activa |
+
+Las operaciones disponibles son: `CREATE`, `READ`, `UPDATE`, `DELETE`.
+
+### Ejemplo: tabla de solo lectura pública
+
+Una tabla de artículos de blog donde cualquiera puede leer, pero solo usuarios autenticados pueden escribir:
+
+```protobuf
+record_apis: [
+  {
+    name: "articles"
+    table_name: "articles"
+    acl_world: [READ]
+    acl_authenticated: [CREATE, UPDATE, DELETE]
+  }
+]
+```
+
+### Ejemplo: tabla completamente privada
+
+Solo usuarios autenticados pueden ver y modificar sus propios datos:
+
+```protobuf
+record_apis: [
+  {
+    name: "notes"
+    table_name: "notes"
+    acl_authenticated: [CREATE, READ, UPDATE, DELETE]
+    # Sin acl_world → los anónimos no tienen acceso a nada
+  }
+]
+```
+
+### Ejemplo: tabla de solo escritura pública
+
+Un buzón de sugerencias donde cualquiera puede enviar pero nadie puede leer (excepto por administración):
+
+```protobuf
+record_apis: [
+  {
+    name: "suggestions"
+    table_name: "suggestions"
+    acl_world: [CREATE]
+    # Sin READ en acl_world → los datos no son legibles por la API pública
+  }
+]
+```
+
+---
+
+## Capa 2: Access rules (permisos por fila)
+
+El ACL global responde "¿puede este tipo de usuario hacer esta operación?". Los access rules responden "¿puede *este usuario específico* actuar sobre *esta fila específica*?".
+
+Son expresiones SQL que deben retornar verdadero (distinto de 0) para que la operación proceda.
+
+### Variables disponibles
+
+| Variable | Disponible en | Descripción |
+|---|---|---|
+| `_USER_.id` | Todas las operaciones | ID del usuario autenticado. `NULL` si no hay sesión |
+| `_REQ_.<campo>` | CREATE, UPDATE | Campos del request (body JSON). `NULL` si el campo no fue enviado |
+| `_REQ__FIELDS_` | CREATE, UPDATE | Lista de nombres de campos presentes en el request |
+| `_ROW_.<campo>` | READ, UPDATE, DELETE | Valores de la fila en la base de datos |
+
+### Ejemplo: permiso por fila — solo el dueño puede editar
+
+Migración de la tabla:
+
+```sql
+-- U001__create_notes.sql
+CREATE TABLE notes (
+  id      BLOB PRIMARY KEY NOT NULL CHECK(is_uuid_v7(id)) DEFAULT (uuid_v7()),
+  user    BLOB NOT NULL REFERENCES _user(id) ON DELETE CASCADE,
+  content TEXT NOT NULL
+) STRICT;
+```
+
+Config con access rules:
+
+```protobuf
+record_apis: [
+  {
+    name: "notes"
+    table_name: "notes"
+    acl_authenticated: [CREATE, READ, UPDATE, DELETE]
+
+    # Al crear, el campo 'user' del request debe ser el usuario autenticado
+    create_access_rule: "_REQ_.user = _USER_.id"
+
+    # Al leer/actualizar/borrar, la fila debe pertenecer al usuario autenticado
+    read_access_rule:   "_ROW_.user = _USER_.id"
+    update_access_rule: "_ROW_.user = _USER_.id"
+    delete_access_rule: "_ROW_.user = _USER_.id"
+  }
+]
+```
+
+Esto significa: usuario A no puede leer, modificar ni borrar las notas de usuario B, aunque ambos estén autenticados. El permiso es **por fila**.
+
+<Aside type="tip">
+`autofill_missing_user_id_columns: true` rellena automáticamente columnas con FK a `_user(id)` con el ID del usuario autenticado. Útil para no exigir que el cliente envíe su propio ID.
+</Aside>
+
+---
+
+## Capa 3: Grupos (pattern con tablas SQL)
+
+TrailBase no tiene grupos built-in. En su lugar, creas una tabla que actúa como tabla de membresía y validas con `EXISTS` en el access rule.
+
+### Ejemplo real: grupo "editors" (del ejemplo blog)
+
+**Paso 1 — Migración del grupo:**
+
+```sql
+-- U002__create_editors_group.sql
+CREATE TABLE editors (
+  user BLOB NOT NULL,
+  FOREIGN KEY(user) REFERENCES _user(id) ON DELETE CASCADE
+) STRICT;
+```
+
+**Paso 2 — Config con validación de membresía:**
+
+```protobuf
+record_apis: [
+  {
+    name: "articles"
+    table_name: "articles"
+    acl_world: [READ]
+    acl_authenticated: [CREATE, UPDATE, DELETE]
+
+    # Solo si el autor del request es el usuario autenticado Y es editor
+    create_access_rule: "(_REQ_.author IS NULL OR _REQ_.author = _USER_.id) AND EXISTS(SELECT 1 FROM editors WHERE user = _USER_.id)"
+
+    # Solo si la fila le pertenece Y es editor
+    update_access_rule: "_ROW_.author = _USER_.id AND EXISTS(SELECT 1 FROM editors WHERE user = _USER_.id)"
+    delete_access_rule: "_ROW_.author = _USER_.id AND EXISTS(SELECT 1 FROM editors WHERE user = _USER_.id)"
+  }
+]
+```
+
+**Paso 3 — Agregar usuarios al grupo (en migración o en runtime via API):**
+
+```sql
+-- U003__add_initial_editors.sql
+INSERT INTO editors (user) SELECT id FROM _user WHERE email = 'admin@example.com';
+```
+
+### Ejemplo: múltiples grupos con nombre
+
+Si tienes varios grupos distintos, agrega una columna `name`:
+
+```sql
+-- U004__create_group_memberships.sql
+CREATE TABLE group_memberships (
+  user       BLOB NOT NULL REFERENCES _user(id) ON DELETE CASCADE,
+  group_name TEXT NOT NULL
+) STRICT;
+
+CREATE UNIQUE INDEX _group_memberships__idx ON group_memberships (user, group_name);
+```
+
+Access rules usando el grupo por nombre:
+
+```protobuf
+create_access_rule: "EXISTS(SELECT 1 FROM group_memberships WHERE user = _USER_.id AND group_name = 'editors')"
+update_access_rule: "_ROW_.author = _USER_.id AND EXISTS(SELECT 1 FROM group_memberships WHERE user = _USER_.id AND group_name = 'editors')"
+```
+
+---
+
+## Gestión programática de grupos
+
+La tabla de membresía puede exponerse como su propio Record API con permisos muy estrictos para construir un panel de moderación:
+
+```protobuf
+record_apis: [
+  {
+    name: "group_memberships"
+    table_name: "group_memberships"
+    acl_authenticated: [CREATE, READ, DELETE]
+
+    # Solo admins pueden gestionar membresías
+    create_access_rule: "EXISTS(SELECT 1 FROM group_memberships WHERE user = _USER_.id AND group_name = 'admins')"
+    read_access_rule:   "EXISTS(SELECT 1 FROM group_memberships WHERE user = _USER_.id AND group_name = 'admins')"
+    delete_access_rule: "EXISTS(SELECT 1 FROM group_memberships WHERE user = _USER_.id AND group_name = 'admins')"
+  }
+]
+```
+
+<Aside type="caution">
+Al exponer tablas de autorización como Record APIs, asegúrate de que los access rules sean suficientemente restrictivos para evitar escalada de permisos. Un usuario no debería poder agregarise a sí mismo a un grupo admin.
+</Aside>
+
+---
+
+## APIs de solo lectura via VIEWs
+
+Para exponer datos sin revelar columnas sensibles (por ej., un perfil público sin email), crea una `VIEW` y expónla como API separada:
+
+```sql
+-- La tabla real tiene email, password_hash, etc.
+-- La vista solo expone campos públicos
+CREATE VIEW public_profiles AS
+  SELECT user, username, avatar_url
+  FROM profiles;
+```
+
+```protobuf
+record_apis: [
+  {
+    # API privada: el usuario lee su propio perfil completo
+    name: "my_profile"
+    table_name: "profiles"
+    acl_authenticated: [READ, UPDATE]
+    read_access_rule:   "_ROW_.user = _USER_.id"
+    update_access_rule: "_ROW_.user = _USER_.id"
+  },
+  {
+    # API pública: cualquiera puede ver perfiles (solo campos públicos)
+    name: "public_profiles"
+    table_name: "public_profiles"
+    acl_world: [READ]
+  }
+]
+```
+
+La misma tabla puede estar expuesta por múltiples Record APIs con diferentes permisos y atributos.
+
+---
+
+## Resumen de patrones
+
+| Caso de uso | Implementación |
+|---|---|
+| Tabla pública de solo lectura | `acl_world: [READ]` |
+| Solo usuarios autenticados | `acl_authenticated: [CREATE, READ, UPDATE, DELETE]` (sin `acl_world`) |
+| Solo el dueño puede editar | `update_access_rule: "_ROW_.user = _USER_.id"` |
+| Grupos/roles custom | Tabla de membresía + `EXISTS(...)` en access rule |
+| Columnas privadas ocultas | VIEW con solo las columnas públicas + Record API separado |
+| Verificar presencia de campo | `'campo' IN _REQ__FIELDS_` |
+| Acceso con llave secreta | `_REQ_.api_key = 'secret'` en el access rule |

@@ -1,0 +1,314 @@
+---
+title: Multitenancy
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+"Multitenancy" significa que múltiples clientes ("tenants") comparten la misma infraestructura pero con datos aislados. Hay tres estrategias clásicas, y TrailBase soporta las tres con diferentes niveles de soporte nativo.
+
+---
+
+## Estrategia 1: Aislamiento por fila (row-level isolation)
+
+Todos los tenants comparten las mismas tablas. Cada fila tiene una columna `tenant_id` y los access rules garantizan que cada tenant solo ve sus propios datos.
+
+Este es el mismo patrón de los access rules por usuario, pero con una capa extra de "organización".
+
+### Modelo de datos
+
+```sql
+-- U001__create_tenant_tables.sql
+CREATE TABLE organizations (
+  id   BLOB PRIMARY KEY NOT NULL CHECK(is_uuid_v7(id)) DEFAULT (uuid_v7()),
+  name TEXT NOT NULL
+) STRICT;
+
+-- Membresía: qué usuarios pertenecen a qué organización
+CREATE TABLE org_members (
+  org  BLOB NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user BLOB NOT NULL REFERENCES _user(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'member'  -- 'admin', 'member', etc.
+) STRICT;
+
+CREATE UNIQUE INDEX _org_members__idx ON org_members (org, user);
+
+-- Datos de la app con columna tenant
+CREATE TABLE projects (
+  id   BLOB PRIMARY KEY NOT NULL CHECK(is_uuid_v7(id)) DEFAULT (uuid_v7()),
+  org  BLOB NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  data TEXT
+) STRICT;
+```
+
+### Config con aislamiento por tenant
+
+```protobuf
+record_apis: [
+  {
+    name: "projects"
+    table_name: "projects"
+    acl_authenticated: [CREATE, READ, UPDATE, DELETE]
+
+    # Solo puede crear proyectos en orgs donde es miembro
+    create_access_rule: "EXISTS(SELECT 1 FROM org_members WHERE org = _REQ_.org AND user = _USER_.id)"
+
+    # Solo puede leer proyectos de sus orgs
+    read_access_rule:   "EXISTS(SELECT 1 FROM org_members WHERE org = _ROW_.org AND user = _USER_.id)"
+    update_access_rule: "EXISTS(SELECT 1 FROM org_members WHERE org = _ROW_.org AND user = _USER_.id)"
+    delete_access_rule: "EXISTS(SELECT 1 FROM org_members WHERE org = _ROW_.org AND user = _USER_.id)"
+  },
+  {
+    name: "org_members"
+    table_name: "org_members"
+    acl_authenticated: [CREATE, READ, DELETE]
+
+    # Solo admins de la org pueden gestionar membresías
+    create_access_rule: "EXISTS(SELECT 1 FROM org_members WHERE org = _REQ_.org AND user = _USER_.id AND role = 'admin')"
+    read_access_rule:   "EXISTS(SELECT 1 FROM org_members WHERE org = _ROW_.org AND user = _USER_.id)"
+    delete_access_rule: "EXISTS(SELECT 1 FROM org_members WHERE org = _ROW_.org AND user = _USER_.id AND role = 'admin')"
+  }
+]
+```
+
+**Cuándo usar este patrón:**
+- Número de tenants ilimitado en una sola instancia
+- Tenants de tamaño similar y moderado
+- SaaS B2B típico (workspaces, organizaciones, equipos)
+- Queries necesitan hacer JOINs entre datos de múltiples tenants (analytics)
+
+**Limitación:** Un tenant grande puede afectar el rendimiento percibido por otros (no hay aislamiento de recursos).
+
+---
+
+## Estrategia 2: Base de datos por tenant (multi-DB)
+
+TrailBase soporta múltiples bases de datos SQLite adjuntas via `ATTACH DATABASE`. Cada tenant tiene su propio archivo `.db`.
+
+### Config con múltiples bases de datos
+
+```protobuf
+# config.textproto
+databases: [
+  { name: "tenant_acme" },
+  { name: "tenant_globex" },
+  { name: "tenant_initech" }
+]
+
+record_apis: [
+  {
+    name: "acme_projects"
+    table_name: "tenant_acme.projects"   # prefijo = nombre de la DB
+    attached_databases: ["tenant_acme"]
+    acl_authenticated: [CREATE, READ, UPDATE, DELETE]
+    read_access_rule: "_ROW_.user = _USER_.id"
+  },
+  {
+    name: "globex_projects"
+    table_name: "tenant_globex.projects"
+    attached_databases: ["tenant_globex"]
+    acl_authenticated: [CREATE, READ, UPDATE, DELETE]
+    read_access_rule: "_ROW_.user = _USER_.id"
+  }
+]
+```
+
+Los archivos de base de datos quedan en `<traildepot>/tenant_acme.db`, `<traildepot>/tenant_globex.db`, etc.
+
+**Cuándo usar este patrón:**
+- Aislamiento de datos más fuerte (archivos separados)
+- Posibilidad de backup/restore individual por tenant
+- Número de tenants bajo o conocido en advance
+- Cada DB puede tener su propio esquema si es necesario
+
+**Limitación:** SQLite tiene un límite de 125 bases de datos adjuntas por conexión. Para muchos tenants, este patrón no escala bien solo.
+
+---
+
+## Estrategia 3: Instancia por tenant
+
+La estrategia más aislada: cada tenant ejecuta su propio proceso TrailBase con su propio directorio de datos.
+
+```
+traildepot-acme/    → instancia TrailBase en puerto 4001
+traildepot-globex/  → instancia TrailBase en puerto 4002
+traildepot-initech/ → instancia TrailBase en puerto 4003
+```
+
+Frente a cada instancia, un reverse proxy (nginx, Caddy, Traefik) rutea según subdominio o path:
+
+```nginx
+# nginx.conf
+server {
+  server_name acme.miapp.com;
+  location / { proxy_pass http://localhost:4001; }
+}
+server {
+  server_name globex.miapp.com;
+  location / { proxy_pass http://localhost:4002; }
+}
+```
+
+Con Docker Compose, cada tenant es un contenedor:
+
+```yaml
+# docker-compose.yml
+services:
+  trail-acme:
+    image: trailbase/trailbase:latest
+    volumes:
+      - ./tenants/acme:/app/traildepot
+    environment:
+      - TRAIL_DATA_DIR=/app/traildepot
+    ports:
+      - "4001:4000"
+
+  trail-globex:
+    image: trailbase/trailbase:latest
+    volumes:
+      - ./tenants/globex:/app/traildepot
+    environment:
+      - TRAIL_DATA_DIR=/app/traildepot
+    ports:
+      - "4002:4000"
+```
+
+**Cuándo usar este patrón:**
+- Máximo aislamiento (datos, recursos, código)
+- Tenants que requieren SLAs independientes
+- Posibilidad de actualizar/rollback por tenant
+- Modelo "on-premise" o "bring your own infra" — el tenant opera su propia instancia
+- TrailBase es un binario estático pequeño (~30MB), esto es muy viable
+
+<Aside type="tip">
+El equipo de TrailBase menciona esto explícitamente en el FAQ: "TrailBase being a small, portable single-executable may simplify such a setup with a separate instance per user."
+</Aside>
+
+---
+
+## ¿Qué estrategia usar?
+
+| | Row-level | Multi-DB | Multi-instancia |
+|---|---|---|---|
+| **Complejidad operacional** | Baja | Media | Alta |
+| **Aislamiento de datos** | Lógico (SQL) | Archivos separados | Completo |
+| **Aislamiento de recursos** | ❌ No | Parcial | ✅ Total |
+| **Número de tenants** | Ilimitado | ~100 máx | Ilimitado (con orquestador) |
+| **JOINs cross-tenant** | ✅ Posible | ✅ Posible (ATTACH) | ❌ No |
+| **Backup por tenant** | Manual | ✅ Fácil (copiar .db) | ✅ Fácil (copiar dir) |
+| **Esquemas distintos por tenant** | ❌ No | ✅ Sí | ✅ Sí |
+| **Caso de uso típico** | SaaS con orgs/workspaces | Pocos tenants grandes | White-label, on-premise |
+
+---
+
+## Patrón híbrido: tenant DB + shared DB + user data
+
+Sí se puede mezclar aislamiento por tenant con datos compartidos globales.
+
+Un patrón común en B2B es:
+
+- `tenant_<id>.db`: datos privados de cada tenant.
+- `shared.db`: catálogos globales, feature flags, plantillas, precios globales.
+- Datos de usuario dentro de `tenant_<id>.db` con ACL por fila.
+
+### Recomendación para user data
+
+Aunque técnicamente podrías intentar "DB por usuario", normalmente no conviene:
+
+- Multiplica mucho la operación (migraciones, backups, restore, observabilidad).
+- Complica ruteo y conexiones.
+- Choca antes con límites prácticos de DB adjuntas.
+
+En la mayoría de productos, conviene guardar `tenant_user_data` dentro de la DB del tenant y aislar por ACL:
+
+```protobuf
+record_apis: [
+  {
+    name: "tenant_user_data"
+    table_name: "tenant_acme.tenant_user_data"
+    attached_databases: ["tenant_acme"]
+    acl_authenticated: [CREATE, READ, UPDATE, DELETE]
+    create_access_rule: "_REQ_.user = _USER_.id"
+    read_access_rule:   "_ROW_.user = _USER_.id"
+    update_access_rule: "_ROW_.user = _USER_.id"
+    delete_access_rule: "_ROW_.user = _USER_.id"
+  },
+  {
+    name: "shared_catalog"
+    table_name: "shared.catalog"
+    attached_databases: ["shared"]
+    acl_world: [READ]
+  }
+]
+```
+
+<Aside type="tip">
+Arquitectura recomendada por defecto: <strong>tenant DB + shared DB + ACL por fila para datos de usuario</strong>. Usa DB por usuario solo si tienes un requisito de cumplimiento muy estricto que realmente lo exija.
+</Aside>
+
+---
+
+## NixOS: ¿un servicio o varios?
+
+Depende del nivel de aislamiento que busques:
+
+- **Un solo servicio TrailBase**:
+  para SaaS típico con aislamiento lógico o multi-DB moderado.
+- **Varios servicios TrailBase (uno por tenant grande)**:
+  para aislamiento fuerte de recursos, despliegues independientes y reducción de blast radius.
+
+### Regla práctica
+
+1. Empieza con **un servicio** si no tienes requisitos enterprise por tenant.
+2. Separa a **varios servicios** cuando un tenant necesite SLA propio, mucho tráfico o compliance dedicado.
+3. Mantén una capa de proxy (Nginx/Caddy/Traefik) para rutear por subdominio.
+
+### Ejemplo en NixOS (múltiples servicios)
+
+```nix
+{ config, pkgs, ... }:
+{
+  systemd.services.trailbase-acme = {
+    description = "TrailBase tenant acme";
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStart = "${pkgs.trailbase}/bin/trail run --data-dir /var/lib/trailbase/acme --address 127.0.0.1:4101";
+      Restart = "always";
+      User = "trailbase";
+      Group = "trailbase";
+      StateDirectory = "trailbase/acme";
+    };
+  };
+
+  systemd.services.trailbase-globex = {
+    description = "TrailBase tenant globex";
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStart = "${pkgs.trailbase}/bin/trail run --data-dir /var/lib/trailbase/globex --address 127.0.0.1:4102";
+      Restart = "always";
+      User = "trailbase";
+      Group = "trailbase";
+      StateDirectory = "trailbase/globex";
+    };
+  };
+}
+```
+
+Con proxy:
+
+- `acme.tuapp.com` -> `127.0.0.1:4101`
+- `globex.tuapp.com` -> `127.0.0.1:4102`
+
+Si hoy estás empezando, la recomendación es: **un servicio** primero. Luego promueves tenants pesados a servicio dedicado cuando aparezca la necesidad.
+
+---
+
+## Estado actual y roadmap
+
+El soporte multi-DB ya está disponible y funcional. El roadmap menciona soporte más elaborado de multitenancy:
+
+> "Multi-tenancy: multi-DB is already supported, however we might want support creation of and routing to per-tenant DBs based on schema templates."
+
+Esto significa que en el futuro TrailBase podría crear nuevas bases de datos por tenant automáticamente (con un esquema template) y rutear las requests sin necesidad de configuración manual por tenant.
+
+Por ahora, la solución recomendada para la mayoría de los SaaS es **row-level isolation** (Estrategia 1) por su simplicidad, complementada con multi-instancia cuando el aislamiento de recursos sea crítico.
