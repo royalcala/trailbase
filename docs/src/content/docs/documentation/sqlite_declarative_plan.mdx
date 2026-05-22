@@ -1,0 +1,290 @@
+---
+title: SQLite Declarative Schema (Plan)
+description: Implementation plan and feasibility analysis for adding declarative SQLite schema as an option to append-only migrations.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+This document outlines a pragmatic path to support a declarative SQLite schema
+workflow in TrailBase while preserving the existing append-only migration model.
+
+## Goal
+
+Add an **optional** declarative workflow for SQLite schema evolution without
+breaking existing migration guarantees:
+
+- Keep append-only migrations as the default and source of truth.
+- Allow a declarative schema file to generate a reviewed migration plan.
+- Materialize approved plans as regular `U<timestamp>__*.sql` migrations.
+
+## Current State
+
+TrailBase currently applies migrations through `trailbase-refinery` and stores
+history in `_schema_history`.
+
+- Embedded migrations for core DBs are loaded from `crates/core/migrations/*`.
+- User migrations are loaded from `traildepot/migrations/<db>/`.
+- The CLI can generate empty migration files via `trail migration`.
+- The admin UI/transaction recorder can emit SQL migrations automatically.
+
+<Aside type="note" title="Compatibility Principle">
+  Declarative mode must be additive. Existing users and deployment workflows
+  should continue to work unchanged unless they explicitly opt in.
+</Aside>
+
+## Why Not Replace Append-Only?
+
+A pure declarative replacement would weaken guarantees TrailBase already
+provides:
+
+- historical traceability per environment,
+- deterministic rollout in CI/prod,
+- compatibility with current operational playbooks.
+
+For TrailBase, declarative mode should be treated as a migration planning tool,
+not a replacement for migration history.
+
+## Proposed Architecture (Dual Mode)
+
+1. Introduce declarative input files for SQLite, e.g.:
+   - `traildepot/schema/main.sql`
+   - `traildepot/schema/logs.sql` (optional later)
+2. Add a planner command:
+   - `trail schema plan --db main --schema traildepot/schema/main.sql`
+3. Add an apply command:
+   - `trail schema apply --db main --schema ...`
+4. `apply` behavior:
+   - Generate diff SQL from current DB -> desired schema.
+   - Run policy checks (destructive ops, unsupported constructs).
+   - Persist SQL as `U<timestamp>__schema_sync.sql`.
+   - Apply with existing migration runner.
+
+This keeps one execution path for production: the existing migration engine.
+
+## Runtime Mode Selection
+
+TrailBase should support an explicit schema mode configuration.
+
+- `append` (default): current append-only behavior.
+- `declarative`: compute plan from declarative schema and materialize it into
+  a regular migration file.
+
+Recommended configuration shape:
+
+- config file key: `schema.mode = append | declarative`
+- optional env override: `TRAILBASE_SCHEMA_MODE=append|declarative`
+
+Suggested environment defaults:
+
+- dev: `declarative` optional, for fast iteration.
+- ci: `declarative` with check-only gate.
+- prod: `append` by default unless explicitly enabled.
+
+<Aside type="note" title="Single Production Execution Path">
+  Even in declarative mode, TrailBase should apply schema changes only through
+  the existing migration pipeline and history table, not via a separate direct
+  schema mutator.
+</Aside>
+
+## Startup Behavior
+
+Startup behavior should remain operationally identical to today: TrailBase
+applies pending migrations during startup.
+
+Mode-specific behavior:
+
+1. `append` mode:
+   - Load and apply pending migrations as today.
+2. `declarative` mode:
+   - Check whether declarative schema has changed.
+   - If changed, generate a migration plan and run policy checks.
+   - Materialize approved plan as `U<timestamp>__schema_sync.sql`.
+   - Continue with standard migration application.
+
+This preserves user expectations around startup and avoids introducing a second
+runtime migration path.
+
+## Startup Performance (Fast Path)
+
+Declarative mode must avoid full schema diff on every boot.
+
+Recommended fast path:
+
+1. Compute fingerprint of declarative input (e.g. stable hash of canonical
+   schema content).
+2. Compare against last applied fingerprint stored in metadata table.
+3. If unchanged, skip planning/diff and proceed directly to normal migration
+   runner.
+4. If changed, run full plan and update fingerprint after successful apply.
+
+Expected outcome:
+
+- Most startups remain near current latency.
+- Full plan cost is only paid when schema definition actually changes.
+
+## Adapter vs Fork Decision
+
+Initial recommendation: build a TrailBase-specific adapter, scoped to SQLite,
+instead of forking a generic schema diff engine immediately.
+
+Benefits:
+
+- Smaller implementation surface.
+- Full control over TrailBase-specific rules.
+- Reduced long-term maintenance risk.
+
+## Feature Scope for MVP
+
+Supported in MVP:
+
+- `CREATE TABLE` (new table)
+- `ADD COLUMN` (nullable or default-backed)
+- `CREATE INDEX` / `DROP INDEX`
+- `CREATE VIEW` / `DROP VIEW` (safe subset)
+
+Explicitly out of scope in MVP:
+
+- automatic trigger rewrites,
+- lossy type conversions,
+- opaque SQL blocks that cannot be normalized safely,
+- automatic handling of all SQLite table-rebuild scenarios.
+
+Unsupported operations should fail with actionable diagnostics.
+
+## Safety Policies
+
+Default deny for destructive changes:
+
+- `DROP TABLE`
+- `DROP COLUMN`
+- non-nullable column additions without safe default/backfill strategy
+
+Users may override with explicit flags:
+
+- `--allow-destructive`
+- `--allow-table-rebuild`
+
+Policy violations must fail before writing migration files.
+
+## Reuse Opportunities in TrailBase
+
+TrailBase already contains useful building blocks for a SQLite adapter:
+
+- SQL/schema parsing utilities in `crates/schema/src/sqlite.rs`
+- migration file generation + apply pipeline in `crates/core/src/migrations.rs`
+- migration creation patterns in `crates/cli/src/bin/trail.rs`
+
+This makes the approach viable without introducing a second migration runtime.
+
+## Implementation Plan
+
+### Phase 0: Design Lock (2-3 days)
+
+- Finalize supported SQL subset.
+- Define canonical normalization rules.
+- Define policy matrix (allowed/blocked/flag-gated operations).
+
+Deliverable:
+
+- Written spec and test matrix.
+
+### Phase 1: Planner MVP (1 week)
+
+- Implement schema introspection reader for live DB.
+- Parse desired declarative SQL file.
+- Build diff for supported operations.
+- Add `trail schema plan` command with readable output.
+
+Deliverable:
+
+- Deterministic plan output + unit tests.
+
+### Phase 2: Migration Materialization (3-5 days)
+
+- Add `trail schema apply` command.
+- Persist generated SQL into versioned migration file.
+- Reuse existing migration application pipeline.
+
+Deliverable:
+
+- End-to-end flow from declarative input to applied migration.
+
+### Phase 3: Hardening (1-2 weeks)
+
+- Add policy enforcement and destructive-op safeguards.
+- Add integration tests with sample databases.
+- Add CI validation mode (`plan --check`) for schema drift detection.
+- Add startup fast-path fingerprint cache and metadata persistence.
+
+Deliverable:
+
+- Production-ready safety baseline.
+
+## Viability Assessment
+
+Technical viability: **High** for dual-mode integration.
+
+Rationale:
+
+- Existing migration infrastructure is robust and reusable.
+- Existing SQLite schema parsing code lowers implementation risk.
+- MVP can target a safe subset and fail closed on unsupported SQL.
+
+Estimated effort:
+
+- MVP: ~2 weeks
+- Hardened production variant: ~4-6 weeks total
+
+Primary risks:
+
+- false positives/negatives in schema diff for edge-case SQL,
+- unexpected SQLite table-rebuild requirements,
+- user expectations that declarative mode supports 100% of SQLite syntax.
+- startup latency regression if full diff is run on every boot.
+
+Risk mitigation:
+
+- narrow MVP scope,
+- explicit unsupported diagnostics,
+- policy-first design,
+- mandatory review in `plan` mode before `apply`.
+- fingerprint-based fast path at startup.
+
+## Success Criteria
+
+1. Existing append-only workflows remain unchanged.
+2. Declarative users can generate and apply safe migration files.
+3. CI can detect schema drift deterministically.
+4. No destructive change occurs without explicit opt-in.
+
+## Suggested CLI UX
+
+```bash
+# Show SQL plan only
+trail schema plan --db main --schema traildepot/schema/main.sql
+
+# Fail CI if drift exists
+trail schema plan --db main --schema traildepot/schema/main.sql --check
+
+# Generate migration and apply it through existing runner
+trail schema apply --db main --schema traildepot/schema/main.sql
+
+# Explicitly allow destructive operations
+trail schema apply --db main --schema traildepot/schema/main.sql --allow-destructive
+
+# Startup behavior policy
+trail run --schema-mode append
+trail run --schema-mode declarative --schema-check strict
+```
+
+Suggested runtime check policy:
+
+- `off`: skip declarative startup checks.
+- `on`: run checks when fingerprint changed.
+- `strict`: fail startup on unsupported or unsafe schema diffs.
+
+## Recommendation
+
+Proceed with dual-mode integration and a TrailBase-specific SQLite adapter.
+Do not replace append-only migrations. Treat declarative mode as an opt-in
+planning and migration-generation capability.

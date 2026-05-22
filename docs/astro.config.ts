@@ -130,6 +130,10 @@ export default defineConfig({
               slug: "documentation/migrations",
             },
             {
+              label: "SQLite Declarative Plan",
+              slug: "documentation/sqlite_declarative_plan",
+            },
+            {
               slug: "documentation/type_safety",
             },
             {
