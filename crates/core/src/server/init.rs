@@ -67,9 +67,15 @@ pub async fn init_app_state(args: InitArgs) -> Result<(bool, AppState), InitErro
     trailbase_schema::registry::build_json_schema_registry(vec![])?,
   ));
 
-  if let Some(config) = crate::config::maybe_load_config_textproto_unverified(&args.data_dir)? {
+  let config_preload = crate::config::maybe_load_config_textproto_unverified(&args.data_dir)?;
+  if let Some(config) = &config_preload {
     update_json_schema_registry(&config.schemas, &json_schema_registry)?;
   }
+
+  let schema_mode = config_preload
+    .as_ref()
+    .map(|config| crate::config::schema_mode_from_config(config.schema_mode))
+    .unwrap_or_default();
 
   let sync_wasm_runtimes = crate::wasm::build_sync_wasm_runtimes_for_components(
     args.data_dir.root().join("wasm"),
@@ -83,6 +89,7 @@ pub async fn init_app_state(args: InitArgs) -> Result<(bool, AppState), InitErro
     data_dir: args.data_dir.clone(),
     json_schema_registry: json_schema_registry.clone(),
     sqlite_function_runtimes: sync_wasm_runtimes,
+    schema_mode,
     // TODO: Wire up from config, if/when PG is supported.
     pg_uri: None,
   })

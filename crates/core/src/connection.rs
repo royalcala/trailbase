@@ -11,10 +11,14 @@ pub use trailbase_sqlite::{Connection, unpack_other_error};
 
 use crate::data_dir::DataDir;
 use crate::migrations::{
-  apply_base_migrations, apply_logs_migrations, apply_main_migrations, apply_session_migrations,
+  apply_base_migrations, apply_declarative_schema, apply_logs_migrations, apply_main_migrations,
+  apply_session_migrations,
 };
 use crate::schema_metadata::build_metadata;
 use crate::wasm::{SqliteFunctions, SqliteStore};
+use trailbase_schema_diff::{
+  PolicyConfig, SchemaCheckPolicy, SchemaMode as DeclarativeSchemaMode,
+};
 
 #[derive(Debug, Error)]
 pub enum ConnectionError {
@@ -76,6 +80,7 @@ struct ConnectionManagerState {
   data_dir: DataDir,
   json_schema_registry: Arc<RwLock<trailbase_schema::registry::JsonSchemaRegistry>>,
   sqlite_function_runtimes: Vec<(SqliteStore, SqliteFunctions)>,
+  schema_mode: DeclarativeSchemaMode,
 
   // Properties for caching connections:
   main: RwLock<ConnectionEntry>,
@@ -96,6 +101,7 @@ pub struct Options {
   pub data_dir: DataDir,
   pub json_schema_registry: Arc<RwLock<trailbase_schema::registry::JsonSchemaRegistry>>,
   pub sqlite_function_runtimes: Vec<(SqliteStore, SqliteFunctions)>,
+  pub schema_mode: DeclarativeSchemaMode,
   pub pg_uri: Option<String>,
 }
 
@@ -108,12 +114,14 @@ pub struct BuildOptions {
 
 impl ConnectionManager {
   pub(crate) async fn new(opts: Options) -> Result<(Self, bool), ConnectionError> {
+    let schema_mode = opts.schema_mode.clone();
     let (main_conn, main_metadata, new_db) = init_db(InitDbOptions {
       data_path: Some(&opts.data_dir.main_db_path()),
       migration_path: Some(&opts.data_dir.migrations_path()),
       is_main_db: true,
       json_registry: &opts.json_schema_registry,
       runtimes: &opts.sqlite_function_runtimes,
+      schema_mode: schema_mode.clone(),
       attach: vec![],
       num_threads: None,
       pg_uri: opts.pg_uri.clone(),
@@ -125,6 +133,7 @@ impl ConnectionManager {
       json_schema_registry,
       sqlite_function_runtimes,
       pg_uri,
+      ..
     } = opts;
 
     return Ok((
@@ -133,6 +142,7 @@ impl ConnectionManager {
           data_dir,
           json_schema_registry,
           sqlite_function_runtimes,
+          schema_mode,
           main: RwLock::new(ConnectionEntry {
             connection: Arc::new(main_conn),
             metadata: Arc::new(main_metadata),
@@ -150,14 +160,17 @@ impl ConnectionManager {
     data_dir: DataDir,
     json_schema_registry: Arc<RwLock<trailbase_schema::registry::JsonSchemaRegistry>>,
     sqlite_function_runtimes: Vec<(SqliteStore, SqliteFunctions)>,
+    schema_mode: DeclarativeSchemaMode,
     pg_uri: Option<String>,
   ) -> Self {
+    let schema_mode_for_init = schema_mode.clone();
     let (main_conn, main_metadata, new_db) = init_db(InitDbOptions {
       data_path: None,
       migration_path: None,
       is_main_db: true,
       json_registry: &json_schema_registry,
       runtimes: &sqlite_function_runtimes,
+      schema_mode: schema_mode_for_init,
       attach: vec![],
       num_threads: None,
       pg_uri: pg_uri.clone(),
@@ -178,6 +191,7 @@ impl ConnectionManager {
         data_dir,
         json_schema_registry,
         sqlite_function_runtimes,
+        schema_mode,
         main: RwLock::new(ConnectionEntry {
           connection: Arc::new(main_conn),
           metadata: Arc::new(main_metadata),
@@ -270,6 +284,7 @@ impl ConnectionManager {
       is_main_db: is_main,
       json_registry: &self.state.json_schema_registry,
       runtimes: &self.state.sqlite_function_runtimes,
+      schema_mode: self.state.schema_mode.clone(),
       attach,
       num_threads: opts.num_threads,
       pg_uri: self.state.pg_uri.clone(),
@@ -319,6 +334,7 @@ struct InitDbOptions<'a> {
   is_main_db: bool,
   json_registry: &'a Arc<RwLock<JsonSchemaRegistry>>,
   runtimes: &'a Vec<(SqliteStore, SqliteFunctions)>,
+  schema_mode: DeclarativeSchemaMode,
   attach: Vec<AttachedDatabase>,
   num_threads: Option<usize>,
 
@@ -360,6 +376,28 @@ async fn init_db<'a>(
   } else {
     false
   };
+
+  if opts.is_main_db
+    && opts.schema_mode == DeclarativeSchemaMode::Declarative
+    && let Some(migrations_path) = opts.migration_path
+    && let Some(traildepot_dir) = migrations_path.parent()
+  {
+    let schema_path = traildepot_dir.join("schema/main.sql");
+    let policy = PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    apply_declarative_schema(
+      &conn,
+      &schema_path,
+      migrations_path,
+      &policy,
+      &SchemaCheckPolicy::On,
+    )
+    .await
+    .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+  }
 
   // TODO: Remove sanity check.
   conn
@@ -465,6 +503,28 @@ async fn init_db<'a>(
   } else {
     false
   };
+
+  if opts.is_main_db
+    && opts.schema_mode == DeclarativeSchemaMode::Declarative
+    && let Some(migrations_path) = opts.migration_path
+    && let Some(traildepot_dir) = migrations_path.parent()
+  {
+    let schema_path = traildepot_dir.join("schema/main.sql");
+    let policy = PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    apply_declarative_schema(
+      &conn,
+      &schema_path,
+      migrations_path,
+      &policy,
+      &SchemaCheckPolicy::On,
+    )
+    .await
+    .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+  }
 
   for AttachedDatabase { schema_name, path } in &opts.attach {
     log::debug!(
