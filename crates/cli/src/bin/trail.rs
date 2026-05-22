@@ -189,8 +189,10 @@ async fn async_main(
           use trailbase_schema_diff::{PolicyConfig, SchemaCheckPolicy};
 
           let db_path = data_dir.data_path().join(format!("{db}.db"));
-          let conn =
-            trailbase_sqlite::Connection::new(|| rusqlite::Connection::open(&db_path))?;
+          let conn = trailbase_sqlite::Connection::with_opts(
+            || rusqlite::Connection::open(&db_path),
+            Default::default(),
+          )?;
 
           let policy = PolicyConfig {
             allow_destructive,
