@@ -1,7 +1,7 @@
 services:
 
   trail:
-    image: docker.io/trailbase/trailbase:latest
+    image: ${TRAILBASE_IMAGE:-ghcr.io/royalcala/trailbase:latest}
     ports:
       - "${PORT:-4000}:4000"
     restart: unless-stopped
