@@ -14,7 +14,13 @@ runs:
   steps:
     - name: Inspect Checkout
       shell: bash
-      run: git describe --tags
+      run: |
+        if git describe --tags --abbrev=0 >/dev/null 2>&1; then
+          git describe --tags
+        else
+          echo "No tags found in checkout; using commit SHA fallback"
+          git rev-parse --short HEAD
+        fi
 
     - name: Install Dependencies
       shell: bash
