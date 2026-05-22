@@ -8039,6 +8039,7 @@ dependencies = [
  "trailbase-reactive",
  "trailbase-refinery",
  "trailbase-schema",
+ "trailbase-schema-diff",
  "trailbase-sqlite",
  "trailbase-sqlvalue",
  "trailbase-wasm-common",
@@ -8098,6 +8099,7 @@ dependencies = [
  "trailbase",
  "trailbase-build",
  "trailbase-extension",
+ "trailbase-schema-diff",
  "trailbase-sqlite",
  "trailbase-wasm-runtime-host",
  "url",
@@ -8255,6 +8257,22 @@ dependencies = [
  "trailbase-sqlite",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "trailbase-schema-diff"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "indoc",
+ "itertools 0.14.0",
+ "log",
+ "rusqlite",
+ "serde",
+ "sha2 0.11.0",
+ "sqlite3-parser",
+ "thiserror 2.0.18",
+ "trailbase-schema",
 ]
 
 [[package]]

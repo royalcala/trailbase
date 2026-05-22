@@ -141,6 +141,17 @@ trail components add trailbase/auth_ui
 endpoints, e.g.
 [http://localhost:4000/\_/auth/login](http://localhost:4000/_/auth/login).
 
+For SQLite schema evolution, TrailBase now also supports an optional
+declarative workflow. You can compare a desired schema file with the live
+database and materialize it as a reviewed migration with:
+
+```sh
+trail declarative plan --db main --schema traildepot/schema/main.sql
+trail declarative apply --db main --schema traildepot/schema/main.sql
+```
+
+The full implementation notes live in the docs under SQLite Declarative Plan.
+
 ## Building
 
 If you have all the necessary build dependencies (Rust, node.js, geos,

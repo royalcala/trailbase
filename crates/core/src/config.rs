@@ -16,6 +16,7 @@ use crate::auth::oauth::providers::oauth_providers_static_registry;
 use crate::connection::ConnectionManager;
 use crate::data_dir::DataDir;
 use crate::records::validate_record_api_config;
+use trailbase_schema_diff::SchemaMode as DeclarativeSchemaMode;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -167,6 +168,30 @@ pub mod proto {
     let hash = s.finish();
 
     return BASE64_URL_SAFE.encode(hash.to_le_bytes());
+  }
+}
+
+pub(crate) fn schema_mode_from_config(mode: Option<i32>) -> DeclarativeSchemaMode {
+  match mode.and_then(|mode| proto::SchemaMode::try_from(mode).ok()) {
+    Some(proto::SchemaMode::Declarative) => DeclarativeSchemaMode::Declarative,
+    _ => DeclarativeSchemaMode::Append,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn schema_mode_defaults_to_append() {
+    assert_eq!(schema_mode_from_config(None), DeclarativeSchemaMode::Append);
+    assert_eq!(schema_mode_from_config(Some(0)), DeclarativeSchemaMode::Append);
+    assert_eq!(schema_mode_from_config(Some(1)), DeclarativeSchemaMode::Append);
+  }
+
+  #[test]
+  fn schema_mode_maps_declarative() {
+    assert_eq!(schema_mode_from_config(Some(2)), DeclarativeSchemaMode::Declarative);
   }
 }
 

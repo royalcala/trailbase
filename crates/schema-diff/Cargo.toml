@@ -1,0 +1,26 @@
+[package]
+name = "trailbase-schema-diff"
+version = "0.1.0"
+edition = "2024"
+license = "OSL-3.0"
+description = "Declarative SQLite schema diff engine for TrailBase"
+homepage = "https://trailbase.io"
+repository = "https://github.com/trailbaseio/trailbase"
+readme = "README.md"
+
+[lib]
+doctest = false
+
+[dependencies]
+itertools = "0.14.0"
+log = { version = "^0.4.21", default-features = false }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+sha2 = "0.11.0"
+sqlite3-parser = { workspace = true }
+hex = "0.4.3"
+thiserror = "2.0.12"
+trailbase-schema = { workspace = true }
+
+[dev-dependencies]
+indoc = "2.0.6"

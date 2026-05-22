@@ -30,6 +30,7 @@ use tower_http::services::fs::{ServeDir, ServeFile};
 use tower_http::{cors, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing_subscriber::{filter, prelude::*};
 use trailbase_assets::AssetService;
+use trailbase_schema_diff::{PolicyConfig, SchemaCheckPolicy, SchemaMode as DeclarativeSchemaMode};
 
 use crate::admin;
 use crate::app_state::AppState;
@@ -316,7 +317,7 @@ impl Server {
           let user_migrations_path = state.data_dir().migrations_path();
           let conn = state.connection_manager().main_entry().connection;
 
-          match crate::migrations::apply_main_migrations(&conn, Some(user_migrations_path))
+          match crate::migrations::apply_main_migrations(&conn, Some(user_migrations_path.clone()))
             .await
             .map_err(|err| trailbase_sqlite::Error::Other(err.into()))
           {
@@ -328,6 +329,28 @@ impl Server {
             Ok(_new_db) => {
               let user_migrations_path = state.data_dir().migrations_path();
               info!("Migrations applied: {user_migrations_path:?}");
+            }
+          }
+
+          if crate::config::schema_mode_from_config(state.get_config().schema_mode)
+            == DeclarativeSchemaMode::Declarative
+          {
+            let schema_path = state.data_dir().root().join("schema/main.sql");
+            let policy = PolicyConfig {
+              allow_destructive: false,
+              allow_table_rebuild: false,
+            };
+
+            if let Err(err) = crate::migrations::apply_declarative_schema(
+              &conn,
+              &schema_path,
+              &user_migrations_path,
+              &policy,
+              &SchemaCheckPolicy::On,
+            )
+            .await
+            {
+              error!("Failed to apply declarative schema: {err}");
             }
           }
 

@@ -1,3 +1,10 @@
+## Unreleased
+
+- Add optional declarative SQLite schema workflow:
+  - `trail declarative plan` to diff a desired schema file against the live database.
+  - `trail declarative apply` to materialize and apply a reviewed migration.
+  - Startup can now pick up `traildepot/schema/main.sql` for declarative synchronization.
+
 ## v0.27.8
 
 - Mainline more Postgres changes:

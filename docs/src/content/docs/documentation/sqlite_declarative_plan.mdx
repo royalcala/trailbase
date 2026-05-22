@@ -69,10 +69,15 @@ TrailBase should support an explicit schema mode configuration.
 - `declarative`: compute plan from declarative schema and materialize it into
   a regular migration file.
 
-Recommended configuration shape:
+Implemented **configuration** shape:
 
-- config file key: `schema.mode = append | declarative`
-- optional env override: `TRAILBASE_SCHEMA_MODE=append|declarative`
+- config file field: `schema_mode = APPEND | DECLARATIVE`
+
+Example `config.textproto` snippet:
+
+```textproto
+schema_mode: DECLARATIVE
+```
 
 Suggested environment defaults:
 
@@ -100,6 +105,9 @@ Mode-specific behavior:
    - If changed, generate a migration plan and run policy checks.
    - Materialize approved plan as `U<timestamp>__schema_sync.sql`.
    - Continue with standard migration application.
+
+The same mode is also respected on config reloads, so a long-running server
+does not silently drift back to append-only behavior after SIGHUP.
 
 This preserves user expectations around startup and avoids introducing a second
 runtime migration path.
@@ -261,20 +269,16 @@ Risk mitigation:
 
 ```bash
 # Show SQL plan only
-trail schema plan --db main --schema traildepot/schema/main.sql
+trail declarative plan --db main --schema traildepot/schema/main.sql
 
 # Fail CI if drift exists
-trail schema plan --db main --schema traildepot/schema/main.sql --check
+trail declarative plan --db main --schema traildepot/schema/main.sql --check
 
 # Generate migration and apply it through existing runner
-trail schema apply --db main --schema traildepot/schema/main.sql
+trail declarative apply --db main --schema traildepot/schema/main.sql
 
 # Explicitly allow destructive operations
-trail schema apply --db main --schema traildepot/schema/main.sql --allow-destructive
-
-# Startup behavior policy
-trail run --schema-mode append
-trail run --schema-mode declarative --schema-check strict
+trail declarative apply --db main --schema traildepot/schema/main.sql --allow-destructive
 ```
 
 Suggested runtime check policy:
