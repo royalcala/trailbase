@@ -136,7 +136,6 @@ pub mod openapi {
   pub struct Doc;
 }
 
-
 pub mod api {
   pub use crate::admin::user::{CreateUserRequest, create_user_handler};
   pub use crate::auth::{AuthTokenClaims, JwtHelper, cli};

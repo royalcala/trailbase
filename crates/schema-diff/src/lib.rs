@@ -15,8 +15,8 @@ mod policy;
 pub mod types;
 
 pub use diff::compute_diff;
-pub use fingerprint::{compute_schema_fingerprint, load_fingerprint, store_fingerprint};
 pub use fingerprint::FINGERPRINT_META_TABLE;
+pub use fingerprint::{compute_schema_fingerprint, load_fingerprint, store_fingerprint};
 pub use introspect::introspect_schema;
 pub use policy::{PolicyConfig, apply_policy};
-pub use types::{DiffOperation, SchemaDiff, SchemaMode, SchemaCheckPolicy};
+pub use types::{DiffOperation, SchemaCheckPolicy, SchemaDiff, SchemaMode};

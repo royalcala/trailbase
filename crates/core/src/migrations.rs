@@ -7,11 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use trailbase_refinery::{Error as RefineryError, Migration};
 use trailbase_schema_diff::{
-  PolicyConfig, SchemaCheckPolicy,
-  apply_policy,
-  compute_diff,
+  FINGERPRINT_META_TABLE, PolicyConfig, SchemaCheckPolicy, apply_policy, compute_diff,
   compute_schema_fingerprint,
-  FINGERPRINT_META_TABLE,
   types::{LiveIndex, LiveSchema, LiveTable},
 };
 use walkdir::{DirEntry, WalkDir};

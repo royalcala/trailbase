@@ -16,9 +16,7 @@ use crate::migrations::{
 };
 use crate::schema_metadata::build_metadata;
 use crate::wasm::{SqliteFunctions, SqliteStore};
-use trailbase_schema_diff::{
-  PolicyConfig, SchemaCheckPolicy, SchemaMode as DeclarativeSchemaMode,
-};
+use trailbase_schema_diff::{PolicyConfig, SchemaCheckPolicy, SchemaMode as DeclarativeSchemaMode};
 
 #[derive(Debug, Error)]
 pub enum ConnectionError {

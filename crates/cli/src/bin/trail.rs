@@ -139,85 +139,90 @@ async fn async_main(
 
       println!("Created empty migration file: {path:?}");
     }
-    SubCommands::Declarative { cmd } => {
-      match cmd {
-        DeclarativeSubCommands::Plan { schema, check, db } => {
-          use trailbase_schema_diff::{compute_diff, introspect_schema};
+    SubCommands::Declarative { cmd } => match cmd {
+      DeclarativeSubCommands::Plan { schema, check, db } => {
+        use trailbase_schema_diff::{compute_diff, introspect_schema};
 
-          let conn = rusqlite::Connection::open(data_dir.data_path().join(format!("{db}.db")))?;
-          let live = introspect_schema(&conn)?;
-          let desired_sql = std::fs::read_to_string(&schema)?;
-          let diff = compute_diff(&desired_sql, &live)?;
+        let conn = rusqlite::Connection::open(data_dir.data_path().join(format!("{db}.db")))?;
+        let live = introspect_schema(&conn)?;
+        let desired_sql = std::fs::read_to_string(&schema)?;
+        let diff = compute_diff(&desired_sql, &live)?;
 
-          if diff.is_empty() {
-            println!("No schema drift detected. Database matches desired schema.");
-            return Ok(());
-          }
-
-          println!("Schema drift detected ({} operation(s)):\n", diff.operations.len());
-          for op in &diff.operations {
-            let flags = [
-              if op.is_destructive { "DESTRUCTIVE" } else { "" },
-              if !op.is_supported { "UNSUPPORTED" } else { "" },
-              if op.requires_table_rebuild { "TABLE_REBUILD" } else { "" },
-            ]
-            .iter()
-            .filter(|s| !s.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-
-            if flags.is_empty() {
-              println!("  [OK] {}", op.description);
-            } else {
-              println!("  [{}] {}", flags, op.description);
-            }
-            println!("       SQL: {}\n", op.sql);
-          }
-
-          if check {
-            return Err("Schema drift detected (--check mode).".into());
-          }
+        if diff.is_empty() {
+          println!("No schema drift detected. Database matches desired schema.");
+          return Ok(());
         }
-        DeclarativeSubCommands::Apply {
-          schema,
-          allow_destructive,
-          allow_table_rebuild,
-          db,
-        } => {
-          use trailbase::api::apply_declarative_schema;
-          use trailbase_schema_diff::{PolicyConfig, SchemaCheckPolicy};
 
-          let db_path = data_dir.data_path().join(format!("{db}.db"));
-          let conn = trailbase_sqlite::Connection::with_opts(
-            || rusqlite::Connection::open(&db_path),
-            Default::default(),
-          )?;
+        println!(
+          "Schema drift detected ({} operation(s)):\n",
+          diff.operations.len()
+        );
+        for op in &diff.operations {
+          let flags = [
+            if op.is_destructive { "DESTRUCTIVE" } else { "" },
+            if !op.is_supported { "UNSUPPORTED" } else { "" },
+            if op.requires_table_rebuild {
+              "TABLE_REBUILD"
+            } else {
+              ""
+            },
+          ]
+          .iter()
+          .filter(|s| !s.is_empty())
+          .cloned()
+          .collect::<Vec<_>>()
+          .join(", ");
 
-          let policy = PolicyConfig {
-            allow_destructive,
-            allow_table_rebuild,
-          };
-          let migrations_dir = data_dir.migrations_path().join(&db);
-          std::fs::create_dir_all(&migrations_dir)?;
-
-          let applied = apply_declarative_schema(
-            &conn,
-            &schema,
-            &migrations_dir,
-            &policy,
-            &SchemaCheckPolicy::On,
-          )
-          .await?;
-
-          if applied {
-            println!("Schema migration applied successfully.");
+          if flags.is_empty() {
+            println!("  [OK] {}", op.description);
           } else {
-            println!("No schema drift detected. Nothing to apply.");
+            println!("  [{}] {}", flags, op.description);
           }
+          println!("       SQL: {}\n", op.sql);
+        }
+
+        if check {
+          return Err("Schema drift detected (--check mode).".into());
         }
       }
-    }
+      DeclarativeSubCommands::Apply {
+        schema,
+        allow_destructive,
+        allow_table_rebuild,
+        db,
+      } => {
+        use trailbase::api::apply_declarative_schema;
+        use trailbase_schema_diff::{PolicyConfig, SchemaCheckPolicy};
+
+        let db_path = data_dir.data_path().join(format!("{db}.db"));
+        let conn = trailbase_sqlite::Connection::with_opts(
+          || rusqlite::Connection::open(&db_path),
+          Default::default(),
+        )?;
+
+        let policy = PolicyConfig {
+          allow_destructive,
+          allow_table_rebuild,
+        };
+        let migrations_dir = data_dir.migrations_path().join(&db);
+        std::fs::create_dir_all(&migrations_dir)?;
+
+        let applied = apply_declarative_schema(
+          &conn,
+          &schema,
+          &migrations_dir,
+          &policy,
+          &SchemaCheckPolicy::On,
+        )
+        .await?;
+
+        if applied {
+          println!("Schema migration applied successfully.");
+        } else {
+          println!("No schema drift detected. Nothing to apply.");
+        }
+      }
+    },
     SubCommands::Admin { cmd } => {
       let (_new_db, state) = init_app_state(InitArgs {
         data_dir,

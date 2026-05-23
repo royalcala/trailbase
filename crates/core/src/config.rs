@@ -185,13 +185,22 @@ mod tests {
   #[test]
   fn schema_mode_defaults_to_append() {
     assert_eq!(schema_mode_from_config(None), DeclarativeSchemaMode::Append);
-    assert_eq!(schema_mode_from_config(Some(0)), DeclarativeSchemaMode::Append);
-    assert_eq!(schema_mode_from_config(Some(1)), DeclarativeSchemaMode::Append);
+    assert_eq!(
+      schema_mode_from_config(Some(0)),
+      DeclarativeSchemaMode::Append
+    );
+    assert_eq!(
+      schema_mode_from_config(Some(1)),
+      DeclarativeSchemaMode::Append
+    );
   }
 
   #[test]
   fn schema_mode_maps_declarative() {
-    assert_eq!(schema_mode_from_config(Some(2)), DeclarativeSchemaMode::Declarative);
+    assert_eq!(
+      schema_mode_from_config(Some(2)),
+      DeclarativeSchemaMode::Declarative
+    );
   }
 }
 
