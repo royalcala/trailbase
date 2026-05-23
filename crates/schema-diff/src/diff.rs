@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use trailbase_schema::parse::parse_into_statements;
 use trailbase_schema::sqlite::{Table, TableIndex};
 
+use crate::introspect::introspect_schema;
 use crate::types::{DiffOperation, LiveSchema, SchemaDiff, SchemaDiffError};
 
 /// Parse desired schema SQL into tables and indexes.
@@ -57,6 +58,16 @@ fn parse_desired(sql: &str) -> Result<(Vec<Table>, Vec<TableIndex>), SchemaDiffE
   }
 
   return Ok((tables, indexes));
+}
+
+/// Build a normalized live schema snapshot from desired SQL using an in-memory DB.
+fn desired_live_schema(sql: &str) -> Result<LiveSchema, SchemaDiffError> {
+  let conn = rusqlite::Connection::open_in_memory()
+    .map_err(|e| SchemaDiffError::Parse(format!("Open in-memory DB: {e}")))?;
+  conn
+    .execute_batch(sql)
+    .map_err(|e| SchemaDiffError::Parse(format!("Apply desired schema SQL: {e}")))?;
+  return introspect_schema(&conn);
 }
 
 /// Normalize a CREATE TABLE or CREATE INDEX SQL string for comparison.
@@ -166,6 +177,7 @@ fn diff_table_columns(
 /// dependency safety (CREATE TABLE before CREATE INDEX).
 pub fn compute_diff(desired_sql: &str, live: &LiveSchema) -> Result<SchemaDiff, SchemaDiffError> {
   let (desired_tables, desired_indexes) = parse_desired(desired_sql)?;
+  let desired_live = desired_live_schema(desired_sql)?;
 
   let live_tables: HashMap<String, &str> = live
     .tables
@@ -187,6 +199,30 @@ pub fn compute_diff(desired_sql: &str, live: &LiveSchema) -> Result<SchemaDiff, 
   let desired_index_names: HashMap<String, ()> = desired_indexes
     .iter()
     .map(|i| (i.name.name.to_lowercase(), ()))
+    .collect();
+
+  let live_views: HashMap<String, &str> = live
+    .views
+    .iter()
+    .map(|v| (v.name.to_lowercase(), v.sql.as_str()))
+    .collect();
+
+  let desired_views: HashMap<String, &str> = desired_live
+    .views
+    .iter()
+    .map(|v| (v.name.to_lowercase(), v.sql.as_str()))
+    .collect();
+
+  let live_triggers: HashMap<String, &str> = live
+    .triggers
+    .iter()
+    .map(|t| (t.name.to_lowercase(), t.sql.as_str()))
+    .collect();
+
+  let desired_triggers: HashMap<String, &str> = desired_live
+    .triggers
+    .iter()
+    .map(|t| (t.name.to_lowercase(), t.sql.as_str()))
     .collect();
 
   let mut operations: Vec<DiffOperation> = vec![];
@@ -273,6 +309,100 @@ pub fn compute_diff(desired_sql: &str, live: &LiveSchema) -> Result<SchemaDiff, 
         requires_table_rebuild: false,
         is_supported: true,
         sql: format!("DROP INDEX IF EXISTS \"{}\"", live_index.name),
+      });
+    }
+  }
+
+  // --- Views: create/recreate/drop ---
+  for desired_view in &desired_live.views {
+    let key = desired_view.name.to_lowercase();
+    if !live_views.contains_key(&key) {
+      operations.push(DiffOperation {
+        description: format!("CREATE VIEW '{}'", desired_view.name),
+        is_destructive: false,
+        requires_table_rebuild: false,
+        is_supported: true,
+        sql: desired_view.sql.clone(),
+      });
+    } else {
+      let live_sql = live_views[&key];
+      if normalize_sql(live_sql) != normalize_sql(&desired_view.sql) {
+        operations.push(DiffOperation {
+          description: format!("RECREATE VIEW '{}' (definition changed)", desired_view.name),
+          is_destructive: false,
+          requires_table_rebuild: false,
+          is_supported: true,
+          sql: format!(
+            "DROP VIEW IF EXISTS \"{}\";\n{}",
+            desired_view.name, desired_view.sql
+          ),
+        });
+      }
+    }
+  }
+
+  for live_view in &live.views {
+    let key = live_view.name.to_lowercase();
+    if !desired_views.contains_key(&key) {
+      operations.push(DiffOperation {
+        description: format!(
+          "DROP VIEW '{}' (destructive, requires --allow-destructive)",
+          live_view.name
+        ),
+        is_destructive: true,
+        requires_table_rebuild: false,
+        is_supported: true,
+        sql: format!("DROP VIEW IF EXISTS \"{}\"", live_view.name),
+      });
+    }
+  }
+
+  // --- Triggers: create/recreate/drop ---
+  for desired_trigger in &desired_live.triggers {
+    let key = desired_trigger.name.to_lowercase();
+    if !live_triggers.contains_key(&key) {
+      operations.push(DiffOperation {
+        description: format!(
+          "CREATE TRIGGER '{}' ON '{}'",
+          desired_trigger.name, desired_trigger.table_name
+        ),
+        is_destructive: false,
+        requires_table_rebuild: false,
+        is_supported: true,
+        sql: desired_trigger.sql.clone(),
+      });
+    } else {
+      let live_sql = live_triggers[&key];
+      if normalize_sql(live_sql) != normalize_sql(&desired_trigger.sql) {
+        operations.push(DiffOperation {
+          description: format!(
+            "RECREATE TRIGGER '{}' ON '{}' (definition changed)",
+            desired_trigger.name, desired_trigger.table_name
+          ),
+          is_destructive: false,
+          requires_table_rebuild: false,
+          is_supported: true,
+          sql: format!(
+            "DROP TRIGGER IF EXISTS \"{}\";\n{}",
+            desired_trigger.name, desired_trigger.sql
+          ),
+        });
+      }
+    }
+  }
+
+  for live_trigger in &live.triggers {
+    let key = live_trigger.name.to_lowercase();
+    if !desired_triggers.contains_key(&key) {
+      operations.push(DiffOperation {
+        description: format!(
+          "DROP TRIGGER '{}' (destructive, requires --allow-destructive)",
+          live_trigger.name
+        ),
+        is_destructive: true,
+        requires_table_rebuild: false,
+        is_supported: true,
+        sql: format!("DROP TRIGGER IF EXISTS \"{}\"", live_trigger.name),
       });
     }
   }
@@ -429,5 +559,100 @@ mod tests {
     let live = live_schema(sql);
     let diff = compute_diff(sql, &live).expect("diff");
     assert!(diff.is_empty());
+  }
+
+  #[test]
+  fn detects_create_view_and_trigger() {
+    let live = live_schema("CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);");
+    let desired = indoc! {
+      "
+      CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+      CREATE VIEW users_view AS SELECT id, email FROM users;
+      CREATE TRIGGER users_touch AFTER UPDATE ON users
+      BEGIN
+        SELECT 1;
+      END;
+      "
+    };
+
+    let diff = compute_diff(desired, &live).expect("diff");
+    assert!(
+      diff
+        .operations
+        .iter()
+        .any(|op| op.description.contains("CREATE VIEW 'users_view'"))
+    );
+    assert!(
+      diff
+        .operations
+        .iter()
+        .any(|op| op.description.contains("CREATE TRIGGER 'users_touch'"))
+    );
+  }
+
+  #[test]
+  fn detects_recreate_view_and_trigger_when_definition_changes() {
+    let live = live_schema(indoc! {
+      "
+      CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+      CREATE VIEW users_view AS SELECT id FROM users;
+      CREATE TRIGGER users_touch AFTER UPDATE ON users
+      BEGIN
+        SELECT 1;
+      END;
+      "
+    });
+
+    let desired = indoc! {
+      "
+      CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+      CREATE VIEW users_view AS SELECT id, email FROM users;
+      CREATE TRIGGER users_touch AFTER UPDATE ON users
+      BEGIN
+        SELECT 2;
+      END;
+      "
+    };
+
+    let diff = compute_diff(desired, &live).expect("diff");
+    assert!(diff.operations.iter().any(|op| {
+      op.description
+        .contains("RECREATE VIEW 'users_view' (definition changed)")
+    }));
+    assert!(diff.operations.iter().any(|op| {
+      op.description
+        .contains("RECREATE TRIGGER 'users_touch' ON 'users' (definition changed)")
+    }));
+  }
+
+  #[test]
+  fn marks_dropped_view_and_trigger_destructive() {
+    let live = live_schema(indoc! {
+      "
+      CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+      CREATE VIEW users_view AS SELECT id, email FROM users;
+      CREATE TRIGGER users_touch AFTER UPDATE ON users
+      BEGIN
+        SELECT 1;
+      END;
+      "
+    });
+
+    let desired = "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);";
+    let diff = compute_diff(desired, &live).expect("diff");
+
+    let drop_view = diff
+      .operations
+      .iter()
+      .find(|op| op.sql.contains("DROP VIEW IF EXISTS \"users_view\""))
+      .expect("drop view operation");
+    assert!(drop_view.is_destructive);
+
+    let drop_trigger = diff
+      .operations
+      .iter()
+      .find(|op| op.sql.contains("DROP TRIGGER IF EXISTS \"users_touch\""))
+      .expect("drop trigger operation");
+    assert!(drop_trigger.is_destructive);
   }
 }

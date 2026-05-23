@@ -9,7 +9,7 @@ use trailbase_refinery::{Error as RefineryError, Migration};
 use trailbase_schema_diff::{
   FINGERPRINT_META_TABLE, PolicyConfig, SchemaCheckPolicy, apply_policy, compute_diff,
   compute_schema_fingerprint,
-  types::{LiveIndex, LiveSchema, LiveTable},
+  types::{LiveIndex, LiveSchema, LiveTable, LiveTrigger, LiveView},
 };
 use walkdir::{DirEntry, WalkDir};
 
@@ -150,6 +150,19 @@ pub async fn apply_declarative_schema(
     sql: String,
   }
 
+  #[derive(serde::Deserialize)]
+  struct ViewRow {
+    name: String,
+    sql: String,
+  }
+
+  #[derive(serde::Deserialize)]
+  struct TriggerRow {
+    name: String,
+    tbl_name: String,
+    sql: String,
+  }
+
   let table_rows: Vec<TableRow> = conn
     .read_query_values(
       "SELECT name, sql FROM sqlite_schema \
@@ -163,6 +176,24 @@ pub async fn apply_declarative_schema(
     .read_query_values(
       "SELECT name, tbl_name, sql FROM sqlite_schema \
        WHERE type = 'index' AND sql IS NOT NULL \
+       ORDER BY name",
+      (),
+    )
+    .await?;
+
+  let view_rows: Vec<ViewRow> = conn
+    .read_query_values(
+      "SELECT name, sql FROM sqlite_schema \
+       WHERE type = 'view' AND sql IS NOT NULL \
+       ORDER BY name",
+      (),
+    )
+    .await?;
+
+  let trigger_rows: Vec<TriggerRow> = conn
+    .read_query_values(
+      "SELECT name, tbl_name, sql FROM sqlite_schema \
+       WHERE type = 'trigger' AND sql IS NOT NULL \
        ORDER BY name",
       (),
     )
@@ -188,6 +219,21 @@ pub async fn apply_declarative_schema(
         name: i.name,
         table_name: i.tbl_name,
         sql: i.sql,
+      })
+      .collect(),
+    views: view_rows
+      .into_iter()
+      .map(|v| LiveView {
+        name: v.name,
+        sql: v.sql,
+      })
+      .collect(),
+    triggers: trigger_rows
+      .into_iter()
+      .map(|t| LiveTrigger {
+        name: t.name,
+        table_name: t.tbl_name,
+        sql: t.sql,
       })
       .collect(),
   };

@@ -4,7 +4,7 @@
 
 use rusqlite::Connection;
 
-use crate::types::{LiveIndex, LiveSchema, LiveTable, SchemaDiffError};
+use crate::types::{LiveIndex, LiveSchema, LiveTable, LiveTrigger, LiveView, SchemaDiffError};
 
 /// System-managed table name prefixes that should be excluded from user schema diff.
 const EXCLUDED_TABLE_PREFIXES: &[&str] = &[
@@ -24,6 +24,8 @@ fn is_system_table(name: &str) -> bool {
 pub fn introspect_schema(conn: &Connection) -> Result<LiveSchema, SchemaDiffError> {
   let mut tables: Vec<LiveTable> = vec![];
   let mut indexes: Vec<LiveIndex> = vec![];
+  let mut views: Vec<LiveView> = vec![];
+  let mut triggers: Vec<LiveTrigger> = vec![];
 
   // Tables
   {
@@ -81,7 +83,65 @@ pub fn introspect_schema(conn: &Connection) -> Result<LiveSchema, SchemaDiffErro
     }
   }
 
-  return Ok(LiveSchema { tables, indexes });
+  // Views
+  {
+    let mut stmt = conn
+      .prepare(
+        "SELECT name, sql FROM sqlite_schema \
+                 WHERE type = 'view' AND sql IS NOT NULL \
+                 ORDER BY name",
+      )
+      .map_err(|e| SchemaDiffError::Parse(e.to_string()))?;
+
+    let rows = stmt
+      .query_map([], |row| {
+        let name: String = row.get(0)?;
+        let sql: Option<String> = row.get(1)?;
+        Ok((name, sql.unwrap_or_default()))
+      })
+      .map_err(|e| SchemaDiffError::Parse(e.to_string()))?;
+
+    for row in rows {
+      let (name, sql) = row.map_err(|e| SchemaDiffError::Parse(e.to_string()))?;
+      views.push(LiveView { name, sql });
+    }
+  }
+
+  // Triggers
+  {
+    let mut stmt = conn
+      .prepare(
+        "SELECT name, tbl_name, sql FROM sqlite_schema \
+                 WHERE type = 'trigger' AND sql IS NOT NULL \
+                 ORDER BY name",
+      )
+      .map_err(|e| SchemaDiffError::Parse(e.to_string()))?;
+
+    let rows = stmt
+      .query_map([], |row| {
+        let name: String = row.get(0)?;
+        let table_name: String = row.get(1)?;
+        let sql: Option<String> = row.get(2)?;
+        Ok((name, table_name, sql.unwrap_or_default()))
+      })
+      .map_err(|e| SchemaDiffError::Parse(e.to_string()))?;
+
+    for row in rows {
+      let (name, table_name, sql) = row.map_err(|e| SchemaDiffError::Parse(e.to_string()))?;
+      triggers.push(LiveTrigger {
+        name,
+        table_name,
+        sql,
+      });
+    }
+  }
+
+  return Ok(LiveSchema {
+    tables,
+    indexes,
+    views,
+    triggers,
+  });
 }
 
 #[cfg(test)]
@@ -128,5 +188,26 @@ mod tests {
         .iter()
         .any(|i| i.name.starts_with("sqlite_autoindex"))
     );
+  }
+
+  #[test]
+  fn includes_views_and_triggers() {
+    let conn = Connection::open_in_memory().expect("conn");
+    conn
+      .execute_batch(
+        "
+        CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+        CREATE VIEW active_users AS SELECT id, email FROM users;
+        CREATE TRIGGER users_touch AFTER UPDATE ON users
+        BEGIN
+          SELECT 1;
+        END;
+        ",
+      )
+      .expect("seed schema");
+
+    let live = introspect_schema(&conn).expect("introspect");
+    assert!(live.views.iter().any(|v| v.name == "active_users"));
+    assert!(live.triggers.iter().any(|t| t.name == "users_touch"));
   }
 }

@@ -127,9 +127,26 @@ pub struct LiveIndex {
   pub sql: String,
 }
 
+/// Represents a live view read from the database.
+#[derive(Clone, Debug)]
+pub struct LiveView {
+  pub name: String,
+  pub sql: String,
+}
+
+/// Represents a live trigger read from the database.
+#[derive(Clone, Debug)]
+pub struct LiveTrigger {
+  pub name: String,
+  pub table_name: String,
+  pub sql: String,
+}
+
 /// Live schema as introspected from a running SQLite database.
 #[derive(Clone, Debug, Default)]
 pub struct LiveSchema {
   pub tables: Vec<LiveTable>,
   pub indexes: Vec<LiveIndex>,
+  pub views: Vec<LiveView>,
+  pub triggers: Vec<LiveTrigger>,
 }
