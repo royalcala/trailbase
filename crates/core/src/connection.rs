@@ -626,4 +626,147 @@ pub(crate) fn connect_rusqlite_without_default_extensions_and_schemas(
   return Ok(conn);
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use parking_lot::RwLock;
+  use std::sync::Arc;
+  use trailbase_schema_diff::SchemaMode as DeclarativeSchemaMode;
+
+  fn make_temp_test_dir(suffix: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .expect("clock")
+      .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+      "trailbase-connection-init-{suffix}-{}-{nanos}",
+      std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    dir
+  }
+
+  fn schema_sync_migration_count(migrations_dir: &PathBuf) -> usize {
+    let main_dir = migrations_dir.join("main");
+    if !main_dir.exists() {
+      return 0;
+    }
+
+    std::fs::read_dir(main_dir)
+      .expect("read dir")
+      .flatten()
+      .filter(|entry| {
+        entry
+          .file_name()
+          .to_string_lossy()
+          .ends_with("__schema_sync.sql")
+      })
+      .count()
+  }
+
+  #[cfg(not(feature = "pg"))]
+  #[tokio::test]
+  async fn startup_applies_declarative_schema_in_declarative_mode() {
+    let root = make_temp_test_dir("declarative");
+    let data_path = root.join("data").join("main.db");
+    let migrations_path = root.join("migrations");
+    let schema_dir = root.join("schema");
+    let schema_path = schema_dir.join("main.sql");
+
+    std::fs::create_dir_all(root.join("data")).expect("data dir");
+    std::fs::create_dir_all(&migrations_path).expect("migrations dir");
+    std::fs::create_dir_all(&schema_dir).expect("schema dir");
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE declarative_users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let registry = Arc::new(RwLock::new(
+      trailbase_schema::registry::build_json_schema_registry(vec![]).expect("registry"),
+    ));
+
+    let (conn, _metadata, _new_db) = init_db(InitDbOptions {
+      data_path: Some(&data_path),
+      migration_path: Some(&migrations_path),
+      is_main_db: true,
+      json_registry: &registry,
+      runtimes: &vec![],
+      schema_mode: DeclarativeSchemaMode::Declarative,
+      attach: vec![],
+      num_threads: Some(1),
+      pg_uri: None,
+    })
+    .await
+    .expect("init db");
+
+    let exists = conn
+      .read_query_row_get::<bool>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='declarative_users')",
+        (),
+        0,
+      )
+      .await
+      .expect("query")
+      .expect("value");
+
+    assert!(exists);
+    assert!(schema_sync_migration_count(&migrations_path) >= 1);
+
+    let _ = std::fs::remove_dir_all(root);
+  }
+
+  #[cfg(not(feature = "pg"))]
+  #[tokio::test]
+  async fn startup_skips_declarative_schema_in_append_mode() {
+    let root = make_temp_test_dir("append");
+    let data_path = root.join("data").join("main.db");
+    let migrations_path = root.join("migrations");
+    let schema_dir = root.join("schema");
+    let schema_path = schema_dir.join("main.sql");
+
+    std::fs::create_dir_all(root.join("data")).expect("data dir");
+    std::fs::create_dir_all(&migrations_path).expect("migrations dir");
+    std::fs::create_dir_all(&schema_dir).expect("schema dir");
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE declarative_users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let registry = Arc::new(RwLock::new(
+      trailbase_schema::registry::build_json_schema_registry(vec![]).expect("registry"),
+    ));
+
+    let (conn, _metadata, _new_db) = init_db(InitDbOptions {
+      data_path: Some(&data_path),
+      migration_path: Some(&migrations_path),
+      is_main_db: true,
+      json_registry: &registry,
+      runtimes: &vec![],
+      schema_mode: DeclarativeSchemaMode::Append,
+      attach: vec![],
+      num_threads: Some(1),
+      pg_uri: None,
+    })
+    .await
+    .expect("init db");
+
+    let exists = conn
+      .read_query_row_get::<bool>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='declarative_users')",
+        (),
+        0,
+      )
+      .await
+      .expect("query")
+      .expect("value");
+
+    assert!(!exists);
+    assert_eq!(schema_sync_migration_count(&migrations_path), 0);
+
+    let _ = std::fs::remove_dir_all(root);
+  }
+}
+
 const PREPARED_STATEMENT_CACHE_CAPACITY: usize = 256;

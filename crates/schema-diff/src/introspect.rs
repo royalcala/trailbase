@@ -83,3 +83,50 @@ pub fn introspect_schema(conn: &Connection) -> Result<LiveSchema, SchemaDiffErro
 
   return Ok(LiveSchema { tables, indexes });
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn excludes_system_tables_and_keeps_user_tables() {
+    let conn = Connection::open_in_memory().expect("conn");
+    conn
+      .execute_batch(
+        "
+        CREATE TABLE __internal(id INTEGER PRIMARY KEY);
+        CREATE TABLE _schema_history(version INTEGER);
+        CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+        ",
+      )
+      .expect("seed schema");
+
+    let live = introspect_schema(&conn).expect("introspect");
+    assert!(live.tables.iter().any(|t| t.name == "users"));
+    assert!(!live.tables.iter().any(|t| t.name == "__internal"));
+    assert!(!live.tables.iter().any(|t| t.name == "_schema_history"));
+  }
+
+  #[test]
+  fn includes_only_user_created_indexes() {
+    let conn = Connection::open_in_memory().expect("conn");
+    conn
+      .execute_batch(
+        "
+        CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT);
+        CREATE INDEX users_name_idx ON users(name);
+        ",
+      )
+      .expect("seed schema");
+
+    let live = introspect_schema(&conn).expect("introspect");
+    assert!(live.indexes.iter().any(|i| i.name == "users_name_idx"));
+    // SQLite auto-indexes for UNIQUE constraints have sql = NULL and should be excluded.
+    assert!(
+      !live
+        .indexes
+        .iter()
+        .any(|i| i.name.starts_with("sqlite_autoindex"))
+    );
+  }
+}

@@ -669,7 +669,10 @@ mod tests {
       .await
       .expect("create users");
     conn
-      .execute("CREATE TABLE posts(id INTEGER PRIMARY KEY, title TEXT);", ())
+      .execute(
+        "CREATE TABLE posts(id INTEGER PRIMARY KEY, title TEXT);",
+        (),
+      )
       .await
       .expect("create posts");
 
@@ -714,7 +717,10 @@ mod tests {
       .await
       .expect("create users");
     conn
-      .execute("CREATE TABLE posts(id INTEGER PRIMARY KEY, title TEXT);", ())
+      .execute(
+        "CREATE TABLE posts(id INTEGER PRIMARY KEY, title TEXT);",
+        (),
+      )
       .await
       .expect("create posts");
 
@@ -741,6 +747,77 @@ mod tests {
 
     assert!(applied);
     assert!(!table_exists(&conn, "posts").await);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 1);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+  }
+
+  #[tokio::test]
+  async fn declarative_apply_returns_false_when_schema_file_missing() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("missing-schema");
+    let schema_path = temp_dir.join("does-not-exist.sql");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    let applied = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::On,
+    )
+    .await
+    .expect("apply");
+
+    assert!(!applied);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 0);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+  }
+
+  #[tokio::test]
+  async fn declarative_off_policy_rechecks_even_with_same_fingerprint() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("check-off");
+    let schema_path = temp_dir.join("main.sql");
+
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    let first = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::On,
+    )
+    .await
+    .expect("first apply");
+    assert!(first);
+
+    let second = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::Off,
+    )
+    .await
+    .expect("second apply");
+
+    assert!(!second);
     assert_eq!(schema_sync_migration_count(&temp_dir), 1);
 
     let _ = std::fs::remove_dir_all(temp_dir);

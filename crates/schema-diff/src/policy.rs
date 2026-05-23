@@ -59,3 +59,81 @@ pub fn filter_safe_operations(ops: Vec<DiffOperation>) -> Vec<DiffOperation> {
     .filter(|op| op.is_supported && !op.is_destructive && !op.requires_table_rebuild)
     .collect();
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::types::SchemaDiff;
+
+  fn op(
+    description: &str,
+    is_supported: bool,
+    is_destructive: bool,
+    requires_table_rebuild: bool,
+  ) -> DiffOperation {
+    DiffOperation {
+      description: description.to_string(),
+      is_supported,
+      is_destructive,
+      requires_table_rebuild,
+      sql: format!("-- {description}"),
+    }
+  }
+
+  #[test]
+  fn rejects_unsupported_operation() {
+    let diff = SchemaDiff {
+      operations: vec![op("unsupported", false, false, false)],
+    };
+    let err = apply_policy(&diff, &PolicyConfig::default()).expect_err("must fail");
+    assert!(err.to_string().contains("Unsupported operation"));
+  }
+
+  #[test]
+  fn rejects_destructive_without_flag() {
+    let diff = SchemaDiff {
+      operations: vec![op("drop table", true, true, false)],
+    };
+    let err = apply_policy(&diff, &PolicyConfig::default()).expect_err("must fail");
+    assert!(err.to_string().contains("allow-destructive"));
+  }
+
+  #[test]
+  fn rejects_table_rebuild_without_flag() {
+    let diff = SchemaDiff {
+      operations: vec![op("rebuild", true, false, true)],
+    };
+    let err = apply_policy(&diff, &PolicyConfig::default()).expect_err("must fail");
+    assert!(err.to_string().contains("allow-table-rebuild"));
+  }
+
+  #[test]
+  fn accepts_when_flags_allow_operations() {
+    let diff = SchemaDiff {
+      operations: vec![
+        op("create", true, false, false),
+        op("drop", true, true, false),
+        op("rebuild", true, false, true),
+      ],
+    };
+
+    let policy = PolicyConfig {
+      allow_destructive: true,
+      allow_table_rebuild: true,
+    };
+    apply_policy(&diff, &policy).expect("policy should pass");
+  }
+
+  #[test]
+  fn filter_safe_keeps_only_supported_non_destructive_non_rebuild() {
+    let filtered = filter_safe_operations(vec![
+      op("safe", true, false, false),
+      op("unsupported", false, false, false),
+      op("destructive", true, true, false),
+      op("rebuild", true, false, true),
+    ]);
+
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].description, "safe");
+  }
+}

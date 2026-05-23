@@ -340,4 +340,94 @@ mod tests {
       .expect("drop posts operation");
     assert!(drop_posts.is_destructive);
   }
+
+  #[test]
+  fn detects_create_index() {
+    let live = live_schema("CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);");
+    let desired = indoc! {
+      "
+      CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+      CREATE INDEX users_email_idx ON users(email);
+      "
+    };
+
+    let diff = compute_diff(desired, &live).expect("diff");
+    assert!(
+      diff
+        .operations
+        .iter()
+        .any(|op| op.description.contains("CREATE INDEX 'users_email_idx'"))
+    );
+  }
+
+  #[test]
+  fn detects_recreate_index_when_definition_changes() {
+    let live = live_schema(indoc! {
+      "
+      CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+      CREATE INDEX users_email_idx ON users(email);
+      "
+    });
+
+    let desired = indoc! {
+      "
+      CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+      CREATE INDEX users_email_idx ON users(email DESC);
+      "
+    };
+
+    let diff = compute_diff(desired, &live).expect("diff");
+    let recreate = diff
+      .operations
+      .iter()
+      .find(|op| op.description.contains("RECREATE INDEX 'users_email_idx'"))
+      .expect("recreate index operation");
+    assert!(
+      recreate
+        .sql
+        .contains("DROP INDEX IF EXISTS \"users_email_idx\"")
+    );
+  }
+
+  #[test]
+  fn marks_dropped_index_destructive() {
+    let live = live_schema(indoc! {
+      "
+      CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);
+      CREATE INDEX users_email_idx ON users(email);
+      "
+    });
+
+    let desired = "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);";
+    let diff = compute_diff(desired, &live).expect("diff");
+
+    let drop_idx = diff
+      .operations
+      .iter()
+      .find(|op| op.sql.contains("DROP INDEX IF EXISTS \"users_email_idx\""))
+      .expect("drop index operation");
+    assert!(drop_idx.is_destructive);
+  }
+
+  #[test]
+  fn flags_not_null_without_default_add_column_as_unsupported() {
+    let live = live_schema("CREATE TABLE users(id INTEGER PRIMARY KEY);");
+    let desired = "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT NOT NULL);";
+
+    let diff = compute_diff(desired, &live).expect("diff");
+    let op = diff
+      .operations
+      .iter()
+      .find(|op| op.description.contains("NOT NULL without DEFAULT"))
+      .expect("unsupported add column operation");
+    assert!(!op.is_supported);
+  }
+
+  #[test]
+  fn no_diff_when_table_schema_matches() {
+    let sql = "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);";
+    let live = live_schema(sql);
+    let diff = compute_diff(sql, &live).expect("diff");
+    assert!(diff.is_empty());
+  }
 }
