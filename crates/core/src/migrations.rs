@@ -172,7 +172,10 @@ pub async fn apply_declarative_schema(
     tables: table_rows
       .into_iter()
       .filter(|t| {
-        !t.name.starts_with("__") && t.name != "_schema_history" && !t.name.starts_with("sqlite_")
+        !t.name.starts_with("__")
+          && t.name != "_schema_history"
+          && t.name != FINGERPRINT_META_TABLE
+          && !t.name.starts_with("sqlite_")
       })
       .map(|t| LiveTable {
         name: t.name,
@@ -513,6 +516,7 @@ struct SessionMigrations;
 mod tests {
   use super::*;
 
+  use std::path::Path;
   use trailbase_sqlite::Connection;
 
   #[test]
@@ -558,5 +562,187 @@ mod tests {
 
     assert!(trigger_exists(conn, "__user__updated_trigger").await);
     assert!(trigger_exists(conn, "__user_avatar__updated_trigger").await);
+  }
+
+  fn make_temp_test_dir(suffix: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .expect("clock")
+      .as_nanos();
+
+    let dir = std::env::temp_dir().join(format!(
+      "trailbase-declarative-{suffix}-{}-{nanos}",
+      std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    dir
+  }
+
+  async fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn
+      .read_query_row_get::<bool>(
+        format!(
+          "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = '{table}')"
+        ),
+        (),
+        0,
+      )
+      .await
+      .expect("query")
+      .expect("value")
+  }
+
+  fn schema_sync_migration_count(migrations_dir: &Path) -> usize {
+    let main_dir = migrations_dir.join("main");
+    if !main_dir.exists() {
+      return 0;
+    }
+
+    std::fs::read_dir(main_dir)
+      .expect("read dir")
+      .flatten()
+      .filter(|entry| {
+        entry
+          .file_name()
+          .to_string_lossy()
+          .ends_with("__schema_sync.sql")
+      })
+      .count()
+  }
+
+  #[tokio::test]
+  async fn declarative_apply_is_idempotent_with_fingerprint() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("idempotent");
+    let schema_path = temp_dir.join("main.sql");
+
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    let first = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::On,
+    )
+    .await
+    .expect("first apply");
+    assert!(first);
+    assert!(table_exists(&conn, "users").await);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 1);
+
+    let second = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::On,
+    )
+    .await
+    .expect("second apply");
+    assert!(!second);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 1);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+  }
+
+  #[tokio::test]
+  async fn declarative_strict_blocks_destructive_without_policy_flag() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("strict-blocks");
+    let schema_path = temp_dir.join("main.sql");
+
+    conn
+      .execute(
+        "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+        (),
+      )
+      .await
+      .expect("create users");
+    conn
+      .execute("CREATE TABLE posts(id INTEGER PRIMARY KEY, title TEXT);", ())
+      .await
+      .expect("create posts");
+
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    let result = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::Strict,
+    )
+    .await;
+
+    assert!(result.is_err());
+    assert!(table_exists(&conn, "posts").await);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 0);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+  }
+
+  #[tokio::test]
+  async fn declarative_strict_allows_destructive_when_enabled() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("strict-allowed");
+    let schema_path = temp_dir.join("main.sql");
+
+    conn
+      .execute(
+        "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+        (),
+      )
+      .await
+      .expect("create users");
+    conn
+      .execute("CREATE TABLE posts(id INTEGER PRIMARY KEY, title TEXT);", ())
+      .await
+      .expect("create posts");
+
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: true,
+      allow_table_rebuild: false,
+    };
+
+    let applied = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::Strict,
+    )
+    .await
+    .expect("apply");
+
+    assert!(applied);
+    assert!(!table_exists(&conn, "posts").await);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 1);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
   }
 }
