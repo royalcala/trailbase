@@ -150,6 +150,11 @@ trail declarative plan --db main --schema traildepot/schema/main.sql
 trail declarative apply --db main --schema traildepot/schema/main.sql
 ```
 
+The declarative diff currently supports tables, indexes, views and triggers
+(including create/recreate/drop when definitions change).
+During startup, TrailBase also uses a schema fingerprint fast path, so
+unchanged declarative schema files skip full diff/planning work.
+
 The full implementation notes live in the docs under SQLite Declarative Plan.
 
 ## Building

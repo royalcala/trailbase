@@ -8,6 +8,13 @@ import { Aside } from "@astrojs/starlight/components";
 This document outlines a pragmatic path to support a declarative SQLite schema
 workflow in TrailBase while preserving the existing append-only migration model.
 
+<Aside type="note" title="Implementation Status">
+   The declarative workflow described here is implemented and available via
+   `trail declarative plan` and `trail declarative apply`. Some sections below
+   are retained as design context, but CLI naming and supported scope are
+   updated to match the current behavior.
+</Aside>
+
 ## Goal
 
 Add an **optional** declarative workflow for SQLite schema evolution without
@@ -50,9 +57,9 @@ not a replacement for migration history.
    - `traildepot/schema/main.sql`
    - `traildepot/schema/logs.sql` (optional later)
 2. Add a planner command:
-   - `trail schema plan --db main --schema traildepot/schema/main.sql`
+   - `trail declarative plan --db main --schema traildepot/schema/main.sql`
 3. Add an apply command:
-   - `trail schema apply --db main --schema ...`
+   - `trail declarative apply --db main --schema ...`
 4. `apply` behavior:
    - Generate diff SQL from current DB -> desired schema.
    - Run policy checks (destructive ops, unsupported constructs).
@@ -147,12 +154,12 @@ Supported in MVP:
 
 - `CREATE TABLE` (new table)
 - `ADD COLUMN` (nullable or default-backed)
-- `CREATE INDEX` / `DROP INDEX`
-- `CREATE VIEW` / `DROP VIEW` (safe subset)
+- `CREATE/RECREATE/DROP INDEX`
+- `CREATE/RECREATE/DROP VIEW`
+- `CREATE/RECREATE/DROP TRIGGER`
 
 Explicitly out of scope in MVP:
 
-- automatic trigger rewrites,
 - lossy type conversions,
 - opaque SQL blocks that cannot be normalized safely,
 - automatic handling of all SQLite table-rebuild scenarios.
@@ -201,7 +208,7 @@ Deliverable:
 - Implement schema introspection reader for live DB.
 - Parse desired declarative SQL file.
 - Build diff for supported operations.
-- Add `trail schema plan` command with readable output.
+- Add `trail declarative plan` command with readable output.
 
 Deliverable:
 
@@ -209,7 +216,7 @@ Deliverable:
 
 ### Phase 2: Migration Materialization (3-5 days)
 
-- Add `trail schema apply` command.
+- Add `trail declarative apply` command.
 - Persist generated SQL into versioned migration file.
 - Reuse existing migration application pipeline.
 

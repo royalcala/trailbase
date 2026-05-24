@@ -4,6 +4,8 @@
   - `trail declarative plan` to diff a desired schema file against the live database.
   - `trail declarative apply` to materialize and apply a reviewed migration.
   - Startup can now pick up `traildepot/schema/main.sql` for declarative synchronization.
+  - Declarative diff now supports `VIEW` and `TRIGGER` objects (create/recreate/drop).
+  - Startup declarative checks use a fingerprint fast-path to skip full planning when schema input is unchanged.
 
 ## v0.27.8
 
