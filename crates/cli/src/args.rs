@@ -67,6 +67,11 @@ pub enum SubCommands {
     /// Optional database name
     db: Option<String>,
   },
+  /// Declarative SQLite schema management (plan & apply).
+  Declarative {
+    #[command(subcommand)]
+    cmd: DeclarativeSubCommands,
+  },
   /// Manage admin users (list, demote, promote).
   Admin {
     #[command(subcommand)]
@@ -159,6 +164,43 @@ pub struct EmailArgs {
   /// Email body, i.e. the actual message.
   #[arg(long, env)]
   pub body: String,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum DeclarativeSubCommands {
+  /// Show the SQL diff between the desired schema file and live database.
+  /// Does NOT apply any changes.
+  Plan {
+    /// Path to the desired schema SQL file (e.g. traildepot/schema/main.sql).
+    #[arg(long, env)]
+    schema: std::path::PathBuf,
+
+    /// Fail with exit code 1 if there is any schema drift (useful for CI).
+    #[arg(long, default_value_t = false)]
+    check: bool,
+
+    /// Optional database name (default: main).
+    #[arg(long, default_value = "main")]
+    db: String,
+  },
+  /// Generate a versioned migration from the schema diff and apply it.
+  Apply {
+    /// Path to the desired schema SQL file (e.g. traildepot/schema/main.sql).
+    #[arg(long, env)]
+    schema: std::path::PathBuf,
+
+    /// Allow destructive operations (DROP TABLE, DROP INDEX).
+    #[arg(long, default_value_t = false)]
+    allow_destructive: bool,
+
+    /// Allow operations that require a full SQLite table rebuild.
+    #[arg(long, default_value_t = false)]
+    allow_table_rebuild: bool,
+
+    /// Optional database name (default: main).
+    #[arg(long, default_value = "main")]
+    db: String,
+  },
 }
 
 #[derive(Subcommand, Debug, Clone)]

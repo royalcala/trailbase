@@ -147,6 +147,45 @@ export function oAuthProviderIdToJSON(object: OAuthProviderId): string {
   }
 }
 
+export enum SchemaMode {
+  SCHEMA_MODE_UNDEFINED = 0,
+  APPEND = 1,
+  DECLARATIVE = 2,
+  UNRECOGNIZED = -1,
+}
+
+export function schemaModeFromJSON(object: any): SchemaMode {
+  switch (object) {
+    case 0:
+    case "SCHEMA_MODE_UNDEFINED":
+      return SchemaMode.SCHEMA_MODE_UNDEFINED;
+    case 1:
+    case "APPEND":
+      return SchemaMode.APPEND;
+    case 2:
+    case "DECLARATIVE":
+      return SchemaMode.DECLARATIVE;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return SchemaMode.UNRECOGNIZED;
+  }
+}
+
+export function schemaModeToJSON(object: SchemaMode): string {
+  switch (object) {
+    case SchemaMode.SCHEMA_MODE_UNDEFINED:
+      return "SCHEMA_MODE_UNDEFINED";
+    case SchemaMode.APPEND:
+      return "APPEND";
+    case SchemaMode.DECLARATIVE:
+      return "DECLARATIVE";
+    case SchemaMode.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export enum SystemJobId {
   SYSTEM_JOB_ID_UNDEFINED = 0,
   BACKUP = 1,
@@ -628,7 +667,11 @@ export interface Config {
   email: EmailConfig | undefined;
   server: ServerConfig | undefined;
   auth: AuthConfig | undefined;
-  jobs: JobsConfig | undefined;
+  jobs:
+    | JobsConfig
+    | undefined;
+  /** / How SQLite schema migrations are handled. */
+  schemaMode?: SchemaMode | undefined;
   databases: DatabaseConfig[];
   recordApis: RecordApiConfig[];
   schemas: JsonSchemaConfig[];
@@ -2582,6 +2625,9 @@ export const Config: MessageFns<Config> = {
     if (message.jobs !== undefined) {
       JobsConfig.encode(message.jobs, writer.uint32(42).fork()).join();
     }
+    if (message.schemaMode !== undefined && message.schemaMode !== 0) {
+      writer.uint32(48).int32(message.schemaMode);
+    }
     for (const v of message.databases) {
       DatabaseConfig.encode(v!, writer.uint32(66).fork()).join();
     }
@@ -2633,6 +2679,14 @@ export const Config: MessageFns<Config> = {
           message.jobs = JobsConfig.decode(reader, reader.uint32());
           continue;
         }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.schemaMode = reader.int32() as any;
+          continue;
+        }
         case 8: {
           if (tag !== 66) {
             break;
@@ -2672,6 +2726,11 @@ export const Config: MessageFns<Config> = {
       server: isSet(object.server) ? ServerConfig.fromJSON(object.server) : undefined,
       auth: isSet(object.auth) ? AuthConfig.fromJSON(object.auth) : undefined,
       jobs: isSet(object.jobs) ? JobsConfig.fromJSON(object.jobs) : undefined,
+      schemaMode: isSet(object.schemaMode)
+        ? schemaModeFromJSON(object.schemaMode)
+        : isSet(object.schema_mode)
+        ? schemaModeFromJSON(object.schema_mode)
+        : undefined,
       databases: globalThis.Array.isArray(object?.databases)
         ? object.databases.map((e: any) => DatabaseConfig.fromJSON(e))
         : [],
@@ -2699,6 +2758,9 @@ export const Config: MessageFns<Config> = {
     }
     if (message.jobs !== undefined) {
       obj.jobs = JobsConfig.toJSON(message.jobs);
+    }
+    if (message.schemaMode !== undefined && message.schemaMode !== 0) {
+      obj.schemaMode = schemaModeToJSON(message.schemaMode);
     }
     if (message.databases?.length) {
       obj.databases = message.databases.map((e) => DatabaseConfig.toJSON(e));
@@ -2729,6 +2791,7 @@ export const Config: MessageFns<Config> = {
     message.jobs = (object.jobs !== undefined && object.jobs !== null)
       ? JobsConfig.fromPartial(object.jobs)
       : undefined;
+    message.schemaMode = object.schemaMode ?? 0;
     message.databases = object.databases?.map((e) => DatabaseConfig.fromPartial(e)) || [];
     message.recordApis = object.recordApis?.map((e) => RecordApiConfig.fromPartial(e)) || [];
     message.schemas = object.schemas?.map((e) => JsonSchemaConfig.fromPartial(e)) || [];

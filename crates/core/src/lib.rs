@@ -141,7 +141,7 @@ pub mod api {
   pub use crate::auth::{AuthTokenClaims, JwtHelper, cli};
   pub use crate::connection::Connection;
   pub use crate::email::{Email, EmailError};
-  pub use crate::migrations::new_unique_migration_filename;
+  pub use crate::migrations::{apply_declarative_schema, new_unique_migration_filename};
   pub use crate::records::json_schema::build_api_json_schema;
   pub use crate::schema_metadata::ConnectionMetadata;
   pub use crate::server::{InitArgs, init_app_state, serve};

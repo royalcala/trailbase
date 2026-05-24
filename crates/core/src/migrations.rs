@@ -2,9 +2,15 @@ use itertools::Itertools;
 use log::*;
 use parking_lot::Mutex;
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use trailbase_refinery::{Error as RefineryError, Migration};
+use trailbase_schema_diff::{
+  FINGERPRINT_META_TABLE, PolicyConfig, SchemaCheckPolicy, apply_policy, compute_diff,
+  compute_schema_fingerprint,
+  types::{LiveIndex, LiveSchema, LiveTable, LiveTrigger, LiveView},
+};
 use walkdir::{DirEntry, WalkDir};
 
 const MIGRATION_TABLE_NAME: &str = "_schema_history";
@@ -67,6 +73,240 @@ pub(crate) async fn apply_main_migrations(
   }
 
   return apply_migrations_async("main", conn, migrations).await;
+}
+
+/// Declarative schema mode: compare desired schema file against live DB,
+/// materialize diff as a versioned migration, and apply it through the
+/// existing migration pipeline.
+///
+/// Returns true if any migration was applied.
+pub async fn apply_declarative_schema(
+  conn: &trailbase_sqlite::Connection,
+  schema_path: impl AsRef<Path>,
+  migrations_dir: impl AsRef<Path>,
+  policy: &PolicyConfig,
+  check_policy: &SchemaCheckPolicy,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+  let schema_path = schema_path.as_ref();
+  let migrations_dir = migrations_dir.as_ref();
+
+  if !schema_path.exists() {
+    debug!(
+      "Declarative schema file not found at {:?}, skipping.",
+      schema_path
+    );
+    return Ok(false);
+  }
+
+  let desired_sql = std::fs::read_to_string(schema_path)?;
+  let fingerprint = compute_schema_fingerprint(&desired_sql);
+
+  conn
+    .execute(
+      format!(
+        "CREATE TABLE IF NOT EXISTS {FINGERPRINT_META_TABLE}(\
+          key TEXT PRIMARY KEY,\
+          value TEXT NOT NULL\
+        ) STRICT"
+      ),
+      (),
+    )
+    .await?;
+
+  // Fast path: skip diff if schema has not changed.
+  if *check_policy != SchemaCheckPolicy::Off {
+    let saved_fp = conn
+      .read_query_row_get::<String>(
+        format!(
+          "SELECT value FROM {meta_table} WHERE key = 'schema_fingerprint'",
+          meta_table = FINGERPRINT_META_TABLE
+        ),
+        (),
+        0,
+      )
+      .await;
+
+    let saved_fp: Option<String> = match saved_fp {
+      Ok(v) => v,
+      Err(_) => None,
+    };
+
+    if saved_fp.as_deref() == Some(&fingerprint) {
+      debug!("Schema fingerprint unchanged, skipping declarative diff.");
+      return Ok(false);
+    }
+  }
+
+  #[derive(serde::Deserialize)]
+  struct TableRow {
+    name: String,
+    sql: Option<String>,
+  }
+
+  #[derive(serde::Deserialize)]
+  struct IndexRow {
+    name: String,
+    tbl_name: String,
+    sql: String,
+  }
+
+  #[derive(serde::Deserialize)]
+  struct ViewRow {
+    name: String,
+    sql: String,
+  }
+
+  #[derive(serde::Deserialize)]
+  struct TriggerRow {
+    name: String,
+    tbl_name: String,
+    sql: String,
+  }
+
+  let table_rows: Vec<TableRow> = conn
+    .read_query_values(
+      "SELECT name, sql FROM sqlite_schema \
+       WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
+       ORDER BY name",
+      (),
+    )
+    .await?;
+
+  let index_rows: Vec<IndexRow> = conn
+    .read_query_values(
+      "SELECT name, tbl_name, sql FROM sqlite_schema \
+       WHERE type = 'index' AND sql IS NOT NULL \
+       ORDER BY name",
+      (),
+    )
+    .await?;
+
+  let view_rows: Vec<ViewRow> = conn
+    .read_query_values(
+      "SELECT name, sql FROM sqlite_schema \
+       WHERE type = 'view' AND sql IS NOT NULL \
+       ORDER BY name",
+      (),
+    )
+    .await?;
+
+  let trigger_rows: Vec<TriggerRow> = conn
+    .read_query_values(
+      "SELECT name, tbl_name, sql FROM sqlite_schema \
+       WHERE type = 'trigger' AND sql IS NOT NULL \
+       ORDER BY name",
+      (),
+    )
+    .await?;
+
+  let live = LiveSchema {
+    tables: table_rows
+      .into_iter()
+      .filter(|t| {
+        !t.name.starts_with("__")
+          && t.name != "_schema_history"
+          && t.name != FINGERPRINT_META_TABLE
+          && !t.name.starts_with("sqlite_")
+      })
+      .map(|t| LiveTable {
+        name: t.name,
+        sql: t.sql.unwrap_or_default(),
+      })
+      .collect(),
+    indexes: index_rows
+      .into_iter()
+      .map(|i| LiveIndex {
+        name: i.name,
+        table_name: i.tbl_name,
+        sql: i.sql,
+      })
+      .collect(),
+    views: view_rows
+      .into_iter()
+      .map(|v| LiveView {
+        name: v.name,
+        sql: v.sql,
+      })
+      .collect(),
+    triggers: trigger_rows
+      .into_iter()
+      .map(|t| LiveTrigger {
+        name: t.name,
+        table_name: t.tbl_name,
+        sql: t.sql,
+      })
+      .collect(),
+  };
+
+  let diff_result = compute_diff(&desired_sql, &live)?;
+
+  if diff_result.is_empty() {
+    info!("Declarative schema: no changes detected.");
+    // Update fingerprint even when no changes, so we skip on next startup.
+    conn
+      .execute(
+        format!(
+          "INSERT INTO {meta_table}(key, value) VALUES('schema_fingerprint', ?1) \
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          meta_table = FINGERPRINT_META_TABLE
+        ),
+        (fingerprint.clone(),),
+      )
+      .await?;
+    return Ok(false);
+  }
+
+  // Apply policy.
+  if let Err(e) = apply_policy(&diff_result, policy) {
+    if *check_policy == SchemaCheckPolicy::Strict {
+      return Err(format!("Declarative schema policy violation: {e}").into());
+    }
+    warn!("Declarative schema policy violation (non-strict): {e}");
+  }
+
+  let sql = diff_result.to_sql();
+  if sql.trim().is_empty() {
+    return Ok(false);
+  }
+
+  // Write migration file.
+  let filename = new_unique_migration_filename("schema_sync");
+  let stem = Path::new(&filename)
+    .file_stem()
+    .ok_or("bad filename")?
+    .to_string_lossy()
+    .to_string();
+
+  let migration_path = migrations_dir.join("main");
+  std::fs::create_dir_all(&migration_path)?;
+  let file_path = migration_path.join(&filename);
+
+  {
+    let mut file = std::fs::File::create_new(&file_path)?;
+    file.write_all(sql.as_bytes())?;
+  }
+  info!("Declarative schema: wrote migration {:?}", file_path);
+
+  // Apply the new migration.
+  let migration = Migration::unapplied(&stem, &sql)?;
+  let runner = new_migration_runner(&[migration]).set_abort_missing(false);
+  let mut conn_clone = conn.clone();
+  runner.run_async(&mut conn_clone).await?;
+
+  // Store updated fingerprint.
+  conn
+    .execute(
+      format!(
+        "INSERT INTO {meta_table}(key, value) VALUES('schema_fingerprint', ?1) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        meta_table = FINGERPRINT_META_TABLE
+      ),
+      (fingerprint.clone(),),
+    )
+    .await?;
+
+  info!("Declarative schema: applied migration '{filename}'.");
+  return Ok(true);
 }
 
 // Base migrations contains things like file deletions table shared across main and user DBs.
@@ -322,6 +562,7 @@ struct SessionMigrations;
 mod tests {
   use super::*;
 
+  use std::path::Path;
   use trailbase_sqlite::Connection;
 
   #[test]
@@ -367,5 +608,264 @@ mod tests {
 
     assert!(trigger_exists(conn, "__user__updated_trigger").await);
     assert!(trigger_exists(conn, "__user_avatar__updated_trigger").await);
+  }
+
+  fn make_temp_test_dir(suffix: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .expect("clock")
+      .as_nanos();
+
+    let dir = std::env::temp_dir().join(format!(
+      "trailbase-declarative-{suffix}-{}-{nanos}",
+      std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    dir
+  }
+
+  async fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn
+      .read_query_row_get::<bool>(
+        format!(
+          "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = '{table}')"
+        ),
+        (),
+        0,
+      )
+      .await
+      .expect("query")
+      .expect("value")
+  }
+
+  fn schema_sync_migration_count(migrations_dir: &Path) -> usize {
+    let main_dir = migrations_dir.join("main");
+    if !main_dir.exists() {
+      return 0;
+    }
+
+    std::fs::read_dir(main_dir)
+      .expect("read dir")
+      .flatten()
+      .filter(|entry| {
+        entry
+          .file_name()
+          .to_string_lossy()
+          .ends_with("__schema_sync.sql")
+      })
+      .count()
+  }
+
+  #[tokio::test]
+  async fn declarative_apply_is_idempotent_with_fingerprint() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("idempotent");
+    let schema_path = temp_dir.join("main.sql");
+
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    let first = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::On,
+    )
+    .await
+    .expect("first apply");
+    assert!(first);
+    assert!(table_exists(&conn, "users").await);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 1);
+
+    let second = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::On,
+    )
+    .await
+    .expect("second apply");
+    assert!(!second);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 1);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+  }
+
+  #[tokio::test]
+  async fn declarative_strict_blocks_destructive_without_policy_flag() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("strict-blocks");
+    let schema_path = temp_dir.join("main.sql");
+
+    conn
+      .execute(
+        "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+        (),
+      )
+      .await
+      .expect("create users");
+    conn
+      .execute(
+        "CREATE TABLE posts(id INTEGER PRIMARY KEY, title TEXT);",
+        (),
+      )
+      .await
+      .expect("create posts");
+
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    let result = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::Strict,
+    )
+    .await;
+
+    assert!(result.is_err());
+    assert!(table_exists(&conn, "posts").await);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 0);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+  }
+
+  #[tokio::test]
+  async fn declarative_strict_allows_destructive_when_enabled() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("strict-allowed");
+    let schema_path = temp_dir.join("main.sql");
+
+    conn
+      .execute(
+        "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+        (),
+      )
+      .await
+      .expect("create users");
+    conn
+      .execute(
+        "CREATE TABLE posts(id INTEGER PRIMARY KEY, title TEXT);",
+        (),
+      )
+      .await
+      .expect("create posts");
+
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: true,
+      allow_table_rebuild: false,
+    };
+
+    let applied = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::Strict,
+    )
+    .await
+    .expect("apply");
+
+    assert!(applied);
+    assert!(!table_exists(&conn, "posts").await);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 1);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+  }
+
+  #[tokio::test]
+  async fn declarative_apply_returns_false_when_schema_file_missing() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("missing-schema");
+    let schema_path = temp_dir.join("does-not-exist.sql");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    let applied = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::On,
+    )
+    .await
+    .expect("apply");
+
+    assert!(!applied);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 0);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+  }
+
+  #[tokio::test]
+  async fn declarative_off_policy_rechecks_even_with_same_fingerprint() {
+    let conn = Connection::open_in_memory().expect("conn");
+    let temp_dir = make_temp_test_dir("check-off");
+    let schema_path = temp_dir.join("main.sql");
+
+    std::fs::write(
+      &schema_path,
+      "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);",
+    )
+    .expect("write schema");
+
+    let policy = trailbase_schema_diff::PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+
+    let first = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::On,
+    )
+    .await
+    .expect("first apply");
+    assert!(first);
+
+    let second = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &temp_dir,
+      &policy,
+      &trailbase_schema_diff::SchemaCheckPolicy::Off,
+    )
+    .await
+    .expect("second apply");
+
+    assert!(!second);
+    assert_eq!(schema_sync_migration_count(&temp_dir), 1);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
   }
 }
