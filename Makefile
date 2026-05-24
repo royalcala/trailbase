@@ -26,6 +26,9 @@ check:
 docker:
 	docker buildx build --platform linux/arm64,linux/amd64 --output=type=registry -t trailbase/trailbase:latest .
 
+docker_publish_local:
+	./deploy/docker_publish_local.sh
+
 openapi:
 	cargo run -- openapi print > docs/openapi/schema.json
 
@@ -45,4 +48,4 @@ publish_crates:
 		-p trailbase-js \
 		-p trailbase
 
-.PHONY: default format check static docker openapi cloc publish_crates
+.PHONY: default format check static docker docker_publish_local openapi cloc publish_crates

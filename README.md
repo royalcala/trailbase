@@ -189,6 +189,21 @@ git submodule update --init --recursive
 docker build . -t trailbase
 ```
 
+To publish Docker images manually from your laptop (instead of GitHub Actions):
+
+```sh
+# Authenticate once (example for GitHub Container Registry).
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u <your-github-user> --password-stdin
+
+# Publish default tags: latest and sha-<commit> for amd64+arm64.
+make docker_publish_local
+
+# Example with explicit image and version tag.
+IMAGE_NAME=royalcala/trailbase TAGS=v0.27.9,latest make docker_publish_local
+```
+
+See `./deploy/docker_publish_local.sh --help` for all supported parameters.
+
 ## Contributing
 
 Contributions are very much appreciated 🙏. For anything beyond bug fixes,
