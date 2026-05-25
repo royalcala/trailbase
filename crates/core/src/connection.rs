@@ -542,6 +542,45 @@ async fn init_db<'a>(
       //
       // IMPORTANT: All extensions need to be loaded before to satisfy potential dependencies.
       apply_base_migrations(&mut secondary, Some(migrations_path), schema_name)?;
+
+      // Apply declarative schema for org DBs if schema/org.sql exists.
+      if opts.schema_mode == DeclarativeSchemaMode::Declarative
+        && let Some(traildepot_dir) = migrations_path.parent()
+      {
+        let org_schema_path = traildepot_dir.join("schema/org.sql");
+        if org_schema_path.exists() {
+          let org_migrations_path = migrations_path.join(schema_name);
+          std::fs::create_dir_all(&org_migrations_path).ok();
+          // Build an async Connection for  declarative schema application.
+          let org_conn_async = trailbase_sqlite::Connection::with_opts(
+            {
+              let path = path.clone();
+              let json_registry = opts.json_registry.clone();
+              let runtimes = opts.runtimes.clone();
+              move || build_connection(Some(path.clone()), json_registry.clone(), &runtimes)
+            },
+            trailbase_sqlite::Options {
+              num_threads: Some(1),
+              ..Default::default()
+            },
+          )
+          .map_err(|e| trailbase_sqlite::Error::Other(e.into()))?;
+
+          let policy = PolicyConfig {
+            allow_destructive: false,
+            allow_table_rebuild: false,
+          };
+          apply_declarative_schema(
+            &org_conn_async,
+            &org_schema_path,
+            &org_migrations_path,
+            &policy,
+            &SchemaCheckPolicy::On,
+          )
+          .await
+          .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+        }
+      }
     }
 
     conn.attach(&path.to_string_lossy(), schema_name).await?;
