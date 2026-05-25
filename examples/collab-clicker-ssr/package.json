@@ -8,7 +8,7 @@
     "build": "pnpm run build:client && pnpm run build:server",
     "build:client": "vite build --outDir dist/client",
     "build:server": "vite build --ssr src/entry-server.tsx --outDir dist/server",
-    "format": "prettier -w *.{ts,js,tsx,jsx}",
+    "format": "prettier -w --no-error-on-unmatched-pattern *.{ts,js,tsx,jsx}",
     "check": "tsc --noEmit --skipLibCheck && eslint"
   },
   "dependencies": {
@@ -27,6 +27,7 @@
     "prettier": "^3.8.3",
     "sirv": "^3.0.2",
     "tailwindcss": "^4.3.0",
+    "typescript": "^5.9.3",
     "typescript-eslint": "^8.59.3",
     "vite": "^8.0.12",
     "vite-plugin-solid": "^2.11.12"

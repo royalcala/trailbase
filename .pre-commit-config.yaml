@@ -95,7 +95,7 @@ repos:
     ### Dart: client and example
     - id: dart_analyze
       name: Dart analyze
-      entry: sh -c 'dart pub get && dart analyze'
+      entry: sh -c 'cd client/dart && flutter pub get && dart analyze'
       language: system
       types: [dart]
       # Unlike formatting, analyzing & testing require a project rather than a list of files.
@@ -103,13 +103,14 @@ repos:
 
     - id: dart_format
       name: Dart format
-      entry: dart format -o none --show all --set-exit-if-changed
+      entry: sh -c 'cd client/dart && flutter pub get && dart format -o none --show all --set-exit-if-changed lib test'
       language: system
       types: [dart]
+      pass_filenames: false
 
     - id: dart_test
       name: Dart test
-      entry: sh -c 'dart pub get && cd client/dart && dart test'
+      entry: sh -c 'cd client/dart && flutter pub get && dart test'
       language: system
       types: [dart]
       # Unlike formatting, analyzing & testing require a project rather than a list of files.
@@ -158,7 +159,14 @@ repos:
       # NOTE: `swift-format` always exits with code 0, meaning we depend on
       # "--in-place" and the pre-commit framework's "Post Run" hook to fail
       # if files were altered.
-      entry: swift format -r --in-place client/swift/trailbase/**/*.swift
+      entry: >-
+        sh -c 'ver="$(swift --version | awk "NR==1 {print \$3}")";
+        min="6.1.0";
+        if [ "$(printf "%s\n%s\n" "$min" "$ver" | sort -V | head -n1)" != "$min" ]; then
+          echo "Skipping Swift format: requires >= $min, found $ver";
+          exit 0;
+        fi;
+        find client/swift/trailbase -name "*.swift" -print0 | xargs -0 swift format -r --in-place'
       language: system
       types: [swift]
       pass_filenames: false
@@ -166,7 +174,14 @@ repos:
     - id: swift_test
       name: Swift test
       # NOTE: cannot test `docs/examples/record_api_swift`, since not hermetic
-      entry: swift test --package-path client/swift/trailbase
+      entry: >-
+        sh -c 'ver="$(swift --version | awk "NR==1 {print \$3}")";
+        min="6.1.0";
+        if [ "$(printf "%s\n%s\n" "$min" "$ver" | sort -V | head -n1)" != "$min" ]; then
+          echo "Skipping Swift tests: requires >= $min, found $ver";
+          exit 0;
+        fi;
+        swift test --package-path client/swift/trailbase'
       language: system
       types: [swift]
       pass_filenames: false
