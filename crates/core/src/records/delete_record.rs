@@ -150,7 +150,8 @@ mod test {
     }
   }
 
-  async fn message_exists(conn: &trailbase_sqlite::Connection, id: &[u8; 16]) -> bool {
+  async fn message_exists<C: std::borrow::Borrow<trailbase_sqlite::Connection>>(conn: C, id: &[u8; 16]) -> bool {
+    let conn = conn.borrow();
     let count: i64 = conn
       .read_query_row_get(
         "SELECT COUNT(*) FROM message WHERE mid = $1",

@@ -36,6 +36,8 @@ use api::*;
   ),
   paths(
     register::register_user_handler,
+    org::list_orgs_handler,
+    org::create_org_handler,
     verify_email::request_email_verification_handler,
     verify_email::verify_email_handler,
     change_email::change_email_request_handler,
@@ -91,6 +93,14 @@ pub(super) fn router(config: &Config) -> Router<crate::AppState> {
     .route(
       &format!("/{AUTH_API_PATH}/register"),
       post(api::register::register_user_handler),
+    )
+    .route(
+      &format!("/{AUTH_API_PATH}/orgs"),
+      get(api::org::list_orgs_handler),
+    )
+    .route(
+      &format!("/{AUTH_API_PATH}/orgs"),
+      post(api::org::create_org_handler),
     )
     // E-mail verification and change flows.
     .route(

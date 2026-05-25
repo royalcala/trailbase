@@ -43,7 +43,7 @@ struct InternalState {
 
   // TODO: Maybe remove main `conn` in favor of connection manager. Note that this is currently
   // also used for the state.user_conn().
-  conn: trailbase_sqlite::Connection,
+  conn: Arc<trailbase_sqlite::Connection>,
   session_conn: trailbase_sqlite::Connection,
   logs_conn: trailbase_sqlite::Connection,
   connection_manager: ConnectionManager,
@@ -190,7 +190,7 @@ impl AppState {
         mailer: config.derive_unchecked(Mailer::new_from_config),
         config,
         json_schema_registry: args.json_schema_registry,
-        conn: (*main_conn).clone(),
+        conn: main_conn.clone(),
         session_conn: args.session_conn,
         logs_conn: args.logs_conn,
         connection_manager: args.connection_manager,
@@ -243,13 +243,12 @@ impl AppState {
     return &self.state.json_schema_registry;
   }
 
-  #[cfg(test)]
   pub fn conn(&self) -> &trailbase_sqlite::Connection {
-    return &self.state.conn;
+    return self.state.conn.as_ref();
   }
 
-  pub fn user_conn(&self) -> &trailbase_sqlite::Connection {
-    return &self.state.conn;
+  pub fn user_conn(&self) -> Arc<trailbase_sqlite::Connection> {
+    return crate::request_context::current_org_conn().unwrap_or_else(|| self.state.conn.clone());
   }
 
   pub fn session_conn(&self) -> &trailbase_sqlite::Connection {
@@ -620,7 +619,7 @@ pub async fn test_state(options: Option<TestStateOptions>) -> anyhow::Result<App
       ),
       config,
       json_schema_registry,
-      conn: (*connection_manager.main_entry().connection).clone(),
+      conn: connection_manager.main_entry().connection.clone(),
       session_conn,
       logs_conn,
       connection_manager,

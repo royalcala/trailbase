@@ -18,6 +18,7 @@ pub struct RefreshRequest {
 pub struct RefreshResponse {
   pub auth_token: String,
   pub csrf_token: String,
+  pub current_org_id: Option<String>,
 }
 
 /// Refreshes auth tokens given a refresh token.
@@ -46,5 +47,6 @@ pub(crate) async fn refresh_handler(
   return Ok(Json(RefreshResponse {
     auth_token,
     csrf_token: claims.csrf_token,
+    current_org_id: claims.org_id,
   }));
 }

@@ -156,6 +156,8 @@ pub async fn login_with_password_for_test(
     &db_user,
     &auth_token_ttl,
     &refresh_token_ttl,
+    None,
+    None,
   )
   .await?;
 
@@ -258,7 +260,7 @@ pub(crate) fn remove_all_cookies(cookies: &Cookies) {
 }
 
 pub async fn user_by_email(state: &AppState, email: &str) -> Result<DbUser, AuthError> {
-  return get_user_by_email(state.user_conn(), email).await;
+  return get_user_by_email(state.user_conn().as_ref(), email).await;
 }
 
 pub async fn get_user_by_email(
@@ -279,7 +281,7 @@ pub async fn get_user_by_email(
 }
 
 pub async fn user_by_id(state: &AppState, id: &uuid::Uuid) -> Result<DbUser, AuthError> {
-  return get_user_by_id(state.user_conn(), id).await;
+  return get_user_by_id(state.user_conn().as_ref(), id).await;
 }
 
 pub async fn get_user_by_id(
@@ -316,6 +318,7 @@ pub async fn user_exists(state: &AppState, email: &str) -> bool {
     }
   };
 }
+
 
 pub(crate) async fn is_admin(state: &AppState, user_id: &uuid::Uuid) -> bool {
   const QUERY: &str = formatcp!(r#"SELECT admin FROM "{USER_TABLE}" WHERE id = $1"#);

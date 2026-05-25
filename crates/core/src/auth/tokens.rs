@@ -170,6 +170,8 @@ pub(crate) async fn mint_new_tokens(
   db_user: &DbUser,
   auth_token_ttl: &Duration,
   refresh_token_ttl: &Duration,
+  org_id: Option<String>,
+  org_role: Option<String>,
 ) -> Result<FreshTokens, AuthError> {
   let verified = db_user.verified;
   if !verified {
@@ -178,7 +180,7 @@ pub(crate) async fn mint_new_tokens(
     ));
   }
 
-  let claims = AuthTokenClaims::new(db_user, auth_token_ttl);
+  let claims = AuthTokenClaims::new(db_user, auth_token_ttl, org_id, org_role);
 
   // Unlike JWT auth tokens, refresh tokens are opaque.
   let refresh_token = random_alphanumeric(REFRESH_TOKEN_LENGTH);
@@ -256,8 +258,10 @@ pub(crate) async fn reauth_with_refresh_token(
     "unverified user, should have been caught by above query"
   );
 
+  let org_id = crate::org::default_org_id_for_user(state, &db_user.uuid()).await?;
+
   return Ok((
-    AuthTokenClaims::new(&db_user, &auth_token_ttl),
+    AuthTokenClaims::new(&db_user, &auth_token_ttl, org_id, None),
     auth_token_ttl,
   ));
 }

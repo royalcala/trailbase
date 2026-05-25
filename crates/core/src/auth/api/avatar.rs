@@ -32,6 +32,7 @@ pub async fn get_avatar_handler(
   };
 
   let conn = state.user_conn();
+  let conn = conn.as_ref();
   let file_upload = run_get_file_query(
     conn,
     &trailbase_schema::QualifiedNameEscaped::new(&AVATAR_TABLE_NAME),
@@ -101,7 +102,7 @@ pub async fn create_avatar_handler(
     .map_err(|_| AuthError::BadRequest("parameter conversion"))?;
 
   let _user_id_value = run_insert_query(
-    conn,
+    conn.as_ref(),
     state.objectstore(),
     &trailbase_schema::QualifiedNameEscaped::new(&AVATAR_TABLE_NAME),
     Some(ConflictResolutionStrategy::Replace),

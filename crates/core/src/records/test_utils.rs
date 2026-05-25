@@ -222,10 +222,11 @@ pub async fn create_chat_message_app_tables_integer(state: &AppState) -> Result<
   return Ok(());
 }
 
-pub async fn add_room(
-  conn: &trailbase_sqlite::Connection,
+pub async fn add_room<C: std::borrow::Borrow<trailbase_sqlite::Connection>>(
+  conn: C,
   name: &str,
 ) -> Result<[u8; 16], anyhow::Error> {
+  let conn = conn.borrow();
   let room: [u8; 16] = conn
     .write_query_row_get(
       "INSERT INTO room (name) VALUES ($1) RETURNING rid",
@@ -238,11 +239,12 @@ pub async fn add_room(
   return Ok(room);
 }
 
-pub async fn add_user_to_room(
-  conn: &trailbase_sqlite::Connection,
+pub async fn add_user_to_room<C: std::borrow::Borrow<trailbase_sqlite::Connection>>(
+  conn: C,
   user: [u8; 16],
   room: [u8; 16],
 ) -> Result<(), trailbase_sqlite::Error> {
+  let conn = conn.borrow();
   conn
     .execute(
       "INSERT INTO room_members (\"user\", room) VALUES ($1, $2)",
@@ -252,12 +254,13 @@ pub async fn add_user_to_room(
   return Ok(());
 }
 
-pub async fn send_message(
-  conn: &trailbase_sqlite::Connection,
+pub async fn send_message<C: std::borrow::Borrow<trailbase_sqlite::Connection>>(
+  conn: C,
   user: [u8; 16],
   room: [u8; 16],
   message: &str,
 ) -> Result<[u8; 16], anyhow::Error> {
+  let conn = conn.borrow();
   let id: [u8; 16] = conn
     .write_query_row_get(
       "INSERT INTO message (_owner, room, data) VALUES ($1, $2, $3) RETURNING mid",

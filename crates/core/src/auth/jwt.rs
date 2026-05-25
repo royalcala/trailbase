@@ -61,13 +61,28 @@ pub struct AuthTokenClaims {
   /// E-mail address of the [sub].
   pub email: String,
 
+  /// Current organization context, if any.
+  #[serde(default)]
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub org_id: Option<String>,
+
+  /// Role in the current organization context, if any.
+  #[serde(default)]
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub org_role: Option<String>,
+
   /// CSRF random token. Requiring that the client echos this random token back on a non-cookie,
   /// non-auto-attach channel can be used to protect from CSRF.
   pub csrf_token: String,
 }
 
 impl AuthTokenClaims {
-  pub(crate) fn new(db_user: &DbUser, auth_token_ttl: &chrono::Duration) -> Self {
+  pub(crate) fn new(
+    db_user: &DbUser,
+    auth_token_ttl: &chrono::Duration,
+    org_id: Option<String>,
+    org_role: Option<String>,
+  ) -> Self {
     assert!(db_user.verified);
 
     let now = chrono::Utc::now();
@@ -79,6 +94,8 @@ impl AuthTokenClaims {
       admin: db_user.admin,
       mfa: db_user.totp_secret.is_some(),
       email: db_user.email.clone(),
+      org_id,
+      org_role,
       csrf_token: random_alphanumeric(20),
     };
   }
@@ -369,7 +386,12 @@ mod tests {
       ..Default::default()
     };
 
-    let claims = AuthTokenClaims::new(&db_user, &crate::constants::DEFAULT_AUTH_TOKEN_TTL);
+    let claims = AuthTokenClaims::new(
+      &db_user,
+      &crate::constants::DEFAULT_AUTH_TOKEN_TTL,
+      None,
+      None,
+    );
     let token = jwt.encode(&claims).unwrap();
 
     assert_eq!(claims, jwt.decode(&token).unwrap());

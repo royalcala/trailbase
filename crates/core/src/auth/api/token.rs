@@ -77,7 +77,7 @@ pub(crate) async fn auth_code_to_token_handler(
     return Err(AuthError::NotFound);
   };
 
-  let db_user = get_user_by_id(state.user_conn(), &Uuid::from_bytes(user_id)).await?;
+  let db_user = get_user_by_id(state.user_conn().as_ref(), &Uuid::from_bytes(user_id)).await?;
 
   let (auth_token_ttl, refresh_token_ttl) = state.access_config(|c| c.auth.token_ttls());
 
@@ -86,6 +86,8 @@ pub(crate) async fn auth_code_to_token_handler(
     &db_user,
     &auth_token_ttl,
     &refresh_token_ttl,
+    crate::org::default_org_id_for_user(&state, &db_user.uuid()).await?,
+    None,
   )
   .await?;
   let auth_token = state

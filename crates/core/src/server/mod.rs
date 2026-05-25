@@ -36,11 +36,13 @@ use crate::admin;
 use crate::app_state::AppState;
 use crate::auth::util::is_admin;
 use crate::auth::{self, AuthError, User};
-use crate::constants::{ADMIN_API_PATH, HEADER_CSRF_TOKEN};
+use crate::constants::{ADMIN_API_PATH, HEADER_CSRF_TOKEN, HEADER_ORG_ID};
 use crate::data_dir::DataDir;
 use crate::extract::ip::RealIpKeyExtractor;
 use crate::logging;
+use crate::org::resolve_org_context;
 use crate::records;
+use crate::request_context;
 
 pub use init::{InitArgs, InitError, init_app_state};
 
@@ -559,6 +561,7 @@ impl Server {
       .layer(axum_tracing_opentelemetry::middleware::OtelAxumLayer::default());
 
     return router
+      .layer(middleware::from_fn_with_state(state.clone(), org_request_context))
       .layer(CookieManagerLayer::new())
       .layer(build_cors(opts))
       .layer(
@@ -621,6 +624,30 @@ async fn assert_admin_api_access(
   let expected_csrf = &user.csrf_token;
   if expected_csrf != received_csrf_token {
     return Err(AuthError::BadRequest("invalid CSRF token"));
+  }
+
+  return Ok(next.run(req).await);
+}
+
+async fn org_request_context(
+  State(state): State<AppState>,
+  mut req: Request,
+  next: Next,
+) -> Result<Response, AuthError> {
+  let org_id_hint = req
+    .headers()
+    .get(HEADER_ORG_ID)
+    .and_then(|header| header.to_str().ok())
+    .map(|value| value.to_string());
+
+  let maybe_user = req.extract_parts_with_state::<Option<User>, _>(&state).await?;
+  let org_context = resolve_org_context(&state, maybe_user.as_ref(), org_id_hint.as_deref()).await?;
+
+  if let Some(org_context) = org_context {
+    return request_context::with_current_org_conn(Some(org_context.conn), async move {
+      return Ok(next.run(req).await);
+    })
+    .await;
   }
 
   return Ok(next.run(req).await);

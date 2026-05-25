@@ -1,4 +1,5 @@
 pub(crate) mod register;
+pub(crate) mod org;
 
 pub(super) mod avatar;
 pub(super) mod change_email;

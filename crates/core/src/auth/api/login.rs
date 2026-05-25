@@ -23,6 +23,7 @@ use crate::extract::Either;
 use crate::rand::random_alphanumeric;
 use crate::util::urlencode;
 use crate::{app_state::AppState, auth::jwt::PendingAuthTokenClaims};
+use crate::org::default_org_id_for_user;
 use crate::{
   auth::login_params::{
     LoginInputParams, LoginParams, ResponseType, build_and_validate_input_params,
@@ -49,6 +50,7 @@ pub struct LoginResponse {
   pub auth_token: String,
   pub refresh_token: String,
   pub csrf_token: String,
+  pub current_org_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS, ToSchema)]
@@ -194,12 +196,15 @@ pub(crate) async fn build_auth_token_flow_response(
   is_json: bool,
 ) -> Result<Response, AuthError> {
   let (auth_token_ttl, refresh_token_ttl) = state.access_config(|c| c.auth.token_ttls());
+  let org_id = default_org_id_for_user(state, &db_user.uuid()).await.unwrap_or(None);
   let build_new_tokens = async || {
     let tokens = crate::auth::tokens::mint_new_tokens(
       state.session_conn(),
       db_user,
       &auth_token_ttl,
       &refresh_token_ttl,
+      org_id.clone(),
+      None,
     )
     .await?;
 
@@ -210,6 +215,7 @@ pub(crate) async fn build_auth_token_flow_response(
         .map_err(|err| AuthError::Internal(err.into()))?,
       refresh_token: tokens.refresh_token,
       csrf_token: tokens.auth_token_claims.csrf_token,
+      current_org_id: tokens.auth_token_claims.org_id.clone(),
     });
   };
 
