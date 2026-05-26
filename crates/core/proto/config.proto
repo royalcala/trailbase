@@ -52,11 +52,6 @@ enum OAuthProviderId {
   GITHUB = 17;
 }
 
-enum SchemaMode {
-  SCHEMA_MODE_UNDEFINED = 0;
-  APPEND = 1;
-  DECLARATIVE = 2;
-}
 
 message OAuthProviderConfig {
   optional string client_id = 1;
@@ -309,9 +304,6 @@ message Config {
   required ServerConfig server = 3;
   required AuthConfig auth = 4;
   required JobsConfig jobs = 5;
-
-  /// How SQLite schema migrations are handled.
-  optional SchemaMode schema_mode = 6;
 
   repeated DatabaseConfig databases = 8;
 

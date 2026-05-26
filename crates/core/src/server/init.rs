@@ -72,11 +72,6 @@ pub async fn init_app_state(args: InitArgs) -> Result<(bool, AppState), InitErro
     update_json_schema_registry(&config.schemas, &json_schema_registry)?;
   }
 
-  let schema_mode = config_preload
-    .as_ref()
-    .map(|config| crate::config::schema_mode_from_config(config.schema_mode))
-    .unwrap_or_default();
-
   let sync_wasm_runtimes = crate::wasm::build_sync_wasm_runtimes_for_components(
     args.data_dir.root().join("wasm"),
     args.runtime_root_fs.as_deref(),
@@ -89,7 +84,6 @@ pub async fn init_app_state(args: InitArgs) -> Result<(bool, AppState), InitErro
     data_dir: args.data_dir.clone(),
     json_schema_registry: json_schema_registry.clone(),
     sqlite_function_runtimes: sync_wasm_runtimes,
-    schema_mode,
     // TODO: Wire up from config, if/when PG is supported.
     pg_uri: None,
   })
@@ -130,6 +124,12 @@ pub async fn init_app_state(args: InitArgs) -> Result<(bool, AppState), InitErro
     wasm_tokio_runtime: args.wasm_tokio_runtime,
   })
   .await;
+
+  // Run startup migration sweep across all org DBs so every org is up-to-date
+  // before serving traffic. Non-fatal: failures are logged but don't block startup.
+  if let Err(err) = crate::org::migrate_all_org_dbs(&app_state).await {
+    log::warn!("Startup org migration sweep error: {err}");
+  }
 
   if new_db {
     let num_admins: i64 = app_state

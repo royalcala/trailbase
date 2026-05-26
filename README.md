@@ -141,19 +141,32 @@ trail components add trailbase/auth_ui
 endpoints, e.g.
 [http://localhost:4000/\_/auth/login](http://localhost:4000/_/auth/login).
 
-For SQLite schema evolution, TrailBase now also supports an optional
-declarative workflow. You can compare a desired schema file with the live
-database and materialize it as a reviewed migration with:
+For SQLite schema evolution, TrailBase uses a schema-driven workflow.
+You can compare a desired schema file with the live database and materialize
+it as a reviewed migration with:
 
 ```sh
 trail declarative plan --db main --schema traildepot/schema/main.sql
 trail declarative apply --db main --schema traildepot/schema/main.sql
 ```
 
-The declarative diff currently supports tables, indexes, views and triggers
+The schema diff currently supports tables, indexes, views and triggers
 (including create/recreate/drop when definitions change).
 During startup, TrailBase also uses a schema fingerprint fast path, so
-unchanged declarative schema files skip full diff/planning work.
+unchanged schema files skip full diff/planning work.
+
+For multi-org setups, TrailBase supports per-org SQLite DBs that are attached
+at runtime when a request is scoped to an organization. In practice:
+
+- `main.db` remains the primary DB.
+- The org DB (for example `org_<slug>.db`) is attached for org-scoped requests.
+- If `traildepot/schema/org.sql` exists,
+  TrailBase applies schema sync for each org DB as it is opened and stores
+  generated migrations in `traildepot/migrations/orgs/<org_db_name>/`.
+- On startup, TrailBase can proactively sweep existing org DBs so migrations are
+  up-to-date before serving traffic.
+- A lazy per-request path remains as a safety net for orgs created after
+  startup.
 
 The full implementation notes live in the docs under SQLite Declarative Plan.
 

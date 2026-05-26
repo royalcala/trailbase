@@ -544,6 +544,7 @@ fn extract_files_from_multipart<S: ColumnAccessor>(
   );
 }
 
+#[allow(unused_variables)]
 fn extract_params_and_files_from_json(
   json_schema_registry: &JsonSchemaRegistry,
   col: &Column,

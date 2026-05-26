@@ -30,7 +30,7 @@ use tower_http::services::fs::{ServeDir, ServeFile};
 use tower_http::{cors, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing_subscriber::{filter, prelude::*};
 use trailbase_assets::AssetService;
-use trailbase_schema_diff::{PolicyConfig, SchemaCheckPolicy, SchemaMode as DeclarativeSchemaMode};
+use trailbase_schema_diff::{PolicyConfig, SchemaCheckPolicy};
 
 use crate::admin;
 use crate::app_state::AppState;
@@ -334,26 +334,23 @@ impl Server {
             }
           }
 
-          if crate::config::schema_mode_from_config(state.get_config().schema_mode)
-            == DeclarativeSchemaMode::Declarative
-          {
-            let schema_path = state.data_dir().root().join("schema/main.sql");
-            let policy = PolicyConfig {
-              allow_destructive: false,
-              allow_table_rebuild: false,
-            };
+          let schema_path = state.data_dir().root().join("schema/main.sql");
+          let main_migrations_path = user_migrations_path.join("main");
+          let policy = PolicyConfig {
+            allow_destructive: false,
+            allow_table_rebuild: false,
+          };
 
-            if let Err(err) = crate::migrations::apply_declarative_schema(
-              &conn,
-              &schema_path,
-              &user_migrations_path,
-              &policy,
-              &SchemaCheckPolicy::On,
-            )
-            .await
-            {
-              error!("Failed to apply declarative schema: {err}");
-            }
+          if let Err(err) = crate::migrations::apply_declarative_schema(
+            &conn,
+            &schema_path,
+            &main_migrations_path,
+            &policy,
+            &SchemaCheckPolicy::On,
+          )
+          .await
+          {
+            error!("Failed to apply declarative schema: {err}");
           }
 
           // NOTE: we're always invalidating: simple & safe. We could also avoid invalidation

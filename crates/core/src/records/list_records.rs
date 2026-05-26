@@ -80,6 +80,7 @@ pub struct ListRecordsQuery {
     (status = 200, description = "Matching records.")
   )
 )]
+#[allow(unused_variables)]
 pub async fn list_records_handler(
   State(state): State<AppState>,
   Path(api_name): Path<String>,

@@ -570,7 +570,6 @@ pub async fn test_state(options: Option<TestStateOptions>) -> anyhow::Result<App
     data_dir.clone(),
     json_schema_registry.clone(),
     vec![],
-    crate::config::schema_mode_from_config(config.schema_mode),
     pg_uri.clone(),
   )
   .await;

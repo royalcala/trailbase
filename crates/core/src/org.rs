@@ -1,6 +1,8 @@
 use const_format::formatcp;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::task::JoinSet;
 use trailbase_sqlite::params;
 use uuid::Uuid;
 
@@ -198,4 +200,225 @@ pub async fn resolve_org_context(
     role: Some(role),
     conn,
   }));
+}
+
+/// On server startup, iterate all known orgs and apply any pending migrations to their
+/// individual DBs. This ensures that after a deploy all org DBs are in sync before any
+/// traffic is served. The lazy path in `get_entry` (via `resolve_org_context`) acts as
+/// the safety net for orgs created after startup.
+///
+/// Migrations are parallelized with tokio tasks. The fingerprint check inside
+/// `apply_declarative_schema` makes this O(1) per org when nothing changed.
+pub async fn migrate_all_org_dbs(state: &AppState) -> Result<(), AuthError> {
+  const QUERY: &str = formatcp!(r#"SELECT slug FROM "{ORG_TABLE}" ORDER BY created ASC"#);
+
+  let slugs: Vec<String> = state
+    .conn()
+    .read_query_values::<String>(QUERY, ())
+    .await
+    .map_err(|_| AuthError::Internal("failed to list org slugs".into()))?;
+
+  if slugs.is_empty() {
+    return Ok(());
+  }
+
+  info!("Running startup migration sweep for {} org(s)...", slugs.len());
+
+  let connection_manager = state.connection_manager();
+  let mut tasks = JoinSet::new();
+
+  for slug in slugs {
+    let cm = connection_manager.clone();
+    tasks.spawn(async move {
+      let db_name = format!("org_{slug}");
+      let result = cm
+        .get_entry(BuildOptions {
+          is_main: true,
+          attached_databases: Some([db_name].into()),
+          ..Default::default()
+        })
+        .await;
+
+      if let Err(err) = result {
+        warn!("Startup migration failed for org '{slug}': {err}");
+        return Err(slug);
+      }
+
+      return Ok(());
+    });
+  }
+
+  let mut failed = 0usize;
+  while let Some(result) = tasks.join_next().await {
+    if result.unwrap_or(Err(String::new())).is_err() {
+      failed += 1;
+    }
+  }
+
+  if failed > 0 {
+    warn!("Startup org migration sweep: {failed} org(s) failed. Check logs above.");
+  } else {
+    info!("Startup org migration sweep complete.");
+  }
+
+  return Ok(());
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::app_state::test_state;
+  use crate::migrations::apply_declarative_schema;
+  use trailbase_schema_diff::{PolicyConfig, SchemaCheckPolicy};
+
+  fn schema_sync_migration_count(migrations_dir: &std::path::Path) -> usize {
+    let orgs_dir = migrations_dir.join("orgs");
+    if !orgs_dir.exists() {
+      return 0;
+    }
+
+    std::fs::read_dir(orgs_dir)
+      .expect("read dir")
+      .flatten()
+      .map(|entry| entry.path())
+      .filter(|path| path.is_dir())
+      .map(|dir| {
+        std::fs::read_dir(dir)
+          .expect("read dir")
+          .flatten()
+          .filter(|entry| {
+            entry
+              .file_name()
+              .to_string_lossy()
+              .ends_with("__schema_sync.sql")
+          })
+          .count()
+      })
+      .sum()
+  }
+
+  #[tokio::test]
+  async fn org_schema_sync_applies_on_first_attach() {
+    let state = test_state(None).await.expect("state");
+    let root = state.data_dir().root().to_path_buf();
+    std::fs::create_dir_all(root.join("data")).expect("data dir");
+    std::fs::create_dir_all(root.join("migrations")).expect("migrations dir");
+    let schema_dir = root.join("schema");
+    let schema_path = schema_dir.join("org.sql");
+    std::fs::create_dir_all(&schema_dir).expect("schema dir");
+    std::fs::write(
+      &schema_path,
+      r#"
+CREATE TABLE _file_deletions (
+  id                           INTEGER PRIMARY KEY NOT NULL,
+  deleted                      INTEGER NOT NULL DEFAULT (UNIXEPOCH()),
+  attempts                     INTEGER NOT NULL DEFAULT 0,
+  errors                       TEXT,
+  table_name                   TEXT NOT NULL,
+  record_rowid                 INTEGER NOT NULL,
+  column_name                  TEXT NOT NULL,
+  json                         TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE org_items(id INTEGER PRIMARY KEY, name TEXT);
+"#,
+    )
+    .expect("write schema");
+
+    let org_id = Uuid::now_v7();
+    let slug = uuid_to_b64(&org_id);
+    let schema_name = org_db_name(&slug).expect("org db name");
+    let org_db_path = root.join("data").join(format!("{schema_name}.db"));
+    let conn = trailbase_sqlite::Connection::with_opts(
+      || rusqlite::Connection::open(&org_db_path),
+      Default::default(),
+    )
+    .expect("open org db");
+
+    let policy = PolicyConfig {
+      allow_destructive: false,
+      allow_table_rebuild: false,
+    };
+    let migration_output_dir = root.join("migrations").join("orgs").join(&schema_name);
+    let applied = apply_declarative_schema(
+      &conn,
+      &schema_path,
+      &migration_output_dir,
+      &policy,
+      &SchemaCheckPolicy::On,
+    )
+    .await
+    .expect("apply schema");
+
+    assert!(applied);
+
+    let exists = conn
+      .read_query_row_get::<bool>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='org_items')",
+        (),
+        0,
+      )
+      .await
+      .expect("query")
+      .expect("value");
+
+    assert!(exists);
+
+    let migrations_dir = root.join("migrations");
+    assert!(schema_sync_migration_count(&migrations_dir) >= 1);
+
+    let _ = std::fs::remove_dir_all(root);
+  }
+
+  #[tokio::test]
+  async fn startup_sweep_applies_existing_org_dbs() {
+    let state = test_state(None).await.expect("state");
+    let root = state.data_dir().root().to_path_buf();
+    std::fs::create_dir_all(root.join("data")).expect("data dir");
+    std::fs::create_dir_all(root.join("migrations")).expect("migrations dir");
+    let schema_dir = root.join("schema");
+    let schema_path = schema_dir.join("org.sql");
+    std::fs::create_dir_all(&schema_dir).expect("schema dir");
+    std::fs::write(
+      &schema_path,
+      r#"
+CREATE TABLE _file_deletions (
+  id                           INTEGER PRIMARY KEY NOT NULL,
+  deleted                      INTEGER NOT NULL DEFAULT (UNIXEPOCH()),
+  attempts                     INTEGER NOT NULL DEFAULT 0,
+  errors                       TEXT,
+  table_name                   TEXT NOT NULL,
+  record_rowid                 INTEGER NOT NULL,
+  column_name                  TEXT NOT NULL,
+  json                         TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE org_events(id INTEGER PRIMARY KEY, name TEXT);
+"#,
+    )
+    .expect("write schema");
+
+    let org_id = Uuid::now_v7();
+    let slug = uuid_to_b64(&org_id);
+    state
+      .conn()
+      .execute(
+        format!(r#"INSERT INTO "{ORG_TABLE}" (id, name, slug) VALUES ($1, $2, $3)"#),
+        params!(org_id.into_bytes(), "Org".to_string(), slug.clone()),
+      )
+      .await
+      .expect("insert org");
+
+    migrate_all_org_dbs(&state).await.expect("startup sweep");
+
+    let schema_name = org_db_name(&slug).expect("org db name");
+    let org_db_path = root.join("data").join(format!("{schema_name}.db"));
+    assert!(org_db_path.exists());
+
+    let migration_dir = root.join("migrations").join("orgs").join(&schema_name);
+    assert!(migration_dir.exists());
+    assert!(schema_sync_migration_count(&root.join("migrations")) >= 1);
+
+    let _ = std::fs::remove_dir_all(root);
+  }
 }

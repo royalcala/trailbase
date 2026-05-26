@@ -83,12 +83,12 @@ pub(crate) async fn apply_main_migrations(
 pub async fn apply_declarative_schema(
   conn: &trailbase_sqlite::Connection,
   schema_path: impl AsRef<Path>,
-  migrations_dir: impl AsRef<Path>,
+  migration_output_dir: impl AsRef<Path>,
   policy: &PolicyConfig,
   check_policy: &SchemaCheckPolicy,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
   let schema_path = schema_path.as_ref();
-  let migrations_dir = migrations_dir.as_ref();
+  let migration_output_dir = migration_output_dir.as_ref();
 
   if !schema_path.exists() {
     debug!(
@@ -277,9 +277,8 @@ pub async fn apply_declarative_schema(
     .to_string_lossy()
     .to_string();
 
-  let migration_path = migrations_dir.join("main");
-  std::fs::create_dir_all(&migration_path)?;
-  let file_path = migration_path.join(&filename);
+  std::fs::create_dir_all(migration_output_dir)?;
+  let file_path = migration_output_dir.join(&filename);
 
   {
     let mut file = std::fs::File::create_new(&file_path)?;
@@ -639,21 +638,28 @@ mod tests {
   }
 
   fn schema_sync_migration_count(migrations_dir: &Path) -> usize {
-    let main_dir = migrations_dir.join("main");
-    if !main_dir.exists() {
-      return 0;
-    }
+    let count = |dir: &Path| -> usize {
+      if !dir.exists() {
+        return 0;
+      }
 
-    std::fs::read_dir(main_dir)
-      .expect("read dir")
-      .flatten()
-      .filter(|entry| {
-        entry
-          .file_name()
-          .to_string_lossy()
-          .ends_with("__schema_sync.sql")
-      })
-      .count()
+      std::fs::read_dir(dir)
+        .expect("read dir")
+        .flatten()
+        .filter(|entry| {
+          entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with("__schema_sync.sql")
+        })
+        .count()
+    };
+
+    let direct = count(migrations_dir);
+    if direct > 0 {
+      return direct;
+    }
+    return count(&migrations_dir.join("main"));
   }
 
   #[tokio::test]
