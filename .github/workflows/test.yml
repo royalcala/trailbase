@@ -30,6 +30,11 @@ jobs:
           RUST_BACKTRACE: 1
         run: cargo build --all-features
 
+      - name: "Check trail CLI binary"
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo check -p trailbase-cli --bin trail
+
       # Just to monitor the runner's disk consumption.
       - name: Monitor Disk Space (End)
         run: df -h
