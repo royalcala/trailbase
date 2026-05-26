@@ -8267,11 +8267,14 @@ dependencies = [
  "indoc",
  "itertools 0.14.0",
  "log",
+ "parking_lot",
  "rusqlite",
  "serde",
+ "serde_json",
  "sha2 0.11.0",
  "sqlite3-parser",
  "thiserror 2.0.18",
+ "trailbase-extension",
  "trailbase-schema",
 ]
 

@@ -15,9 +15,12 @@
 //!
 //! Unsupported operations will be flagged with is_supported=false for diagnostic output.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use parking_lot::RwLock;
 use trailbase_schema::parse::parse_into_statements;
+use trailbase_schema::registry::build_json_schema_registry;
 use trailbase_schema::sqlite::{Table, TableIndex};
 
 use crate::introspect::introspect_schema;
@@ -62,7 +65,35 @@ fn parse_desired(sql: &str) -> Result<(Vec<Table>, Vec<TableIndex>), SchemaDiffE
 
 /// Build a normalized live schema snapshot from desired SQL using an in-memory DB.
 fn desired_live_schema(sql: &str) -> Result<LiveSchema, SchemaDiffError> {
-  let conn = rusqlite::Connection::open_in_memory()
+  let mut schema_names = HashSet::new();
+  let mut search_offset = 0;
+  while let Some(relative_start) = sql[search_offset..].find("jsonschema('") {
+    let name_start = search_offset + relative_start + "jsonschema('".len();
+    let Some(relative_end) = sql[name_start..].find('\'') else {
+      break;
+    };
+    schema_names.insert(sql[name_start..name_start + relative_end].to_string());
+    search_offset = name_start + relative_end + 1;
+  }
+
+  let placeholder_schemas = schema_names
+    .into_iter()
+    .map(|name| {
+      (
+        name,
+        serde_json::json!({
+          "type": "object"
+        }),
+      )
+    })
+    .collect::<Vec<_>>();
+
+  let registry = Arc::new(RwLock::new(
+    build_json_schema_registry(placeholder_schemas)
+      .map_err(|err| SchemaDiffError::Parse(format!("Build JSON schema registry: {err}")))?,
+  ));
+
+  let conn = trailbase_extension::connect_sqlite(None, Some(registry))
     .map_err(|e| SchemaDiffError::Parse(format!("Open in-memory DB: {e}")))?;
   conn
     .execute_batch(sql)

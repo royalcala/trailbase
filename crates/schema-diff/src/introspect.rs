@@ -10,6 +10,7 @@ use crate::types::{LiveIndex, LiveSchema, LiveTable, LiveTrigger, LiveView, Sche
 const EXCLUDED_TABLE_PREFIXES: &[&str] = &[
   "__", // TrailBase internal tables: __user, __session, etc.
   "_schema_history",
+  "_schema_diff_meta",
   "sqlite_",
 ];
 

@@ -8,6 +8,7 @@
 /// - trail schema-mgmt detect-changes  Check if system/ has uncommitted changes
 /// - trail schema-mgmt auto-sync       Automatically handle system/ + app/ changes end-to-end
 
+use std::fs;
 use std::path::PathBuf;
 use trailbase::schema_manager::SchemaStructure;
 
@@ -61,16 +62,108 @@ impl SchemaCommand {
         _db: Option<String>,
         _force: bool,
     ) -> Result<(), BoxError> {
-        println!("⚙️  Syncing system schemas from database...");
-        println!("   (This requires a running TrailBase instance)");
+        let schema = SchemaStructure::detect(&self.base_dir)?;
+        let db_path = self.base_dir.join("data/main.db");
 
-        println!("\n📝 Command to extract system schemas:");
-        println!("   trail schema export > traildepot/schema/system/main.sql");
+        if !db_path.is_file() {
+            return Err(format!("Main database not found: {}", db_path.display()).into());
+        }
 
-        println!("\n💡 After exporting:");
-        println!("   git add traildepot/schema/system/");
-        println!("   git commit -m 'chore(trailbase): sync system schemas'");
+        if !_force && schema.system_main.exists() {
+            let existing = fs::read_to_string(&schema.system_main).unwrap_or_default();
+            if !existing.trim().is_empty() {
+                return Err(format!(
+                    "{} already exists; rerun with --force to overwrite it",
+                    schema.system_main.display()
+                )
+                .into());
+            }
+        }
 
+        let conn = rusqlite::Connection::open(&db_path)?;
+
+        #[derive(serde::Deserialize)]
+        struct SchemaRow {
+            name: String,
+            sql: Option<String>,
+        }
+
+        let mut statements: Vec<String> = vec![];
+
+        let mut collect = |query: &str| -> Result<(), BoxError> {
+            let mut stmt = conn.prepare(query)?;
+            let rows = stmt.query_map([], |row| {
+                Ok(SchemaRow {
+                    name: row.get(0)?,
+                    sql: row.get(1)?,
+                })
+            })?;
+
+            for row in rows {
+                let row = row?;
+                if row.name == "_schema_history"
+                    || row.name == "_schema_fingerprint"
+                    || row.name == "_schema_diff_meta"
+                {
+                    continue;
+                }
+                if let Some(sql) = row.sql {
+                    statements.push(sql);
+                }
+            }
+
+            Ok(())
+        };
+
+        collect(
+            "SELECT name, sql FROM sqlite_schema \
+             WHERE type = 'table' AND sql IS NOT NULL AND name LIKE '\\_%' ESCAPE '\\' \
+             ORDER BY name",
+        )?;
+        collect(
+            "SELECT name, sql FROM sqlite_schema \
+             WHERE type = 'index' AND sql IS NOT NULL AND name LIKE '\\_%' ESCAPE '\\' \
+             ORDER BY name",
+        )?;
+        collect(
+            "SELECT name, sql FROM sqlite_schema \
+             WHERE type = 'trigger' AND sql IS NOT NULL AND name LIKE '\\_%' ESCAPE '\\' \
+             ORDER BY name",
+        )?;
+        collect(
+            "SELECT name, sql FROM sqlite_schema \
+             WHERE type = 'view' AND sql IS NOT NULL AND name LIKE '\\_%' ESCAPE '\\' \
+             ORDER BY name",
+        )?;
+
+        let mut output = String::from(
+            "-- ⚠️ AUTOGENERADO - NO MODIFICAR MANUALMENTE\n\
+             -- ============================================================\n\
+             -- TrailBase system schema\n\
+             -- Source: generated from the live main.db\n\
+             -- ============================================================\n\n",
+        );
+        let formatted_statements = statements
+            .iter()
+            .map(|statement| {
+                let statement = statement.trim();
+                if statement.ends_with(';') {
+                    statement.to_string()
+                } else {
+                    format!("{statement};")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        output.push_str(&formatted_statements);
+        output.push('\n');
+
+        if let Some(parent) = schema.system_main.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&schema.system_main, output)?;
+
+        println!("✅ {} actualizado", schema.system_main.display());
         Ok(())
     }
 
