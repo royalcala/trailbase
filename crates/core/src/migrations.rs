@@ -80,26 +80,15 @@ pub(crate) async fn apply_main_migrations(
 /// existing migration pipeline.
 ///
 /// Returns true if any migration was applied.
-pub async fn apply_declarative_schema(
+pub async fn apply_declarative_schema_sql(
   conn: &trailbase_sqlite::Connection,
-  schema_path: impl AsRef<Path>,
+  desired_sql: &str,
   migration_output_dir: impl AsRef<Path>,
   policy: &PolicyConfig,
   check_policy: &SchemaCheckPolicy,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-  let schema_path = schema_path.as_ref();
   let migration_output_dir = migration_output_dir.as_ref();
-
-  if !schema_path.exists() {
-    debug!(
-      "Declarative schema file not found at {:?}, skipping.",
-      schema_path
-    );
-    return Ok(false);
-  }
-
-  let desired_sql = std::fs::read_to_string(schema_path)?;
-  let fingerprint = compute_schema_fingerprint(&desired_sql);
+  let fingerprint = compute_schema_fingerprint(desired_sql);
 
   conn
     .execute(
@@ -238,11 +227,10 @@ pub async fn apply_declarative_schema(
       .collect(),
   };
 
-  let diff_result = compute_diff(&desired_sql, &live)?;
+  let diff_result = compute_diff(desired_sql, &live)?;
 
   if diff_result.is_empty() {
     info!("Declarative schema: no changes detected.");
-    // Update fingerprint even when no changes, so we skip on next startup.
     conn
       .execute(
         format!(
@@ -256,7 +244,6 @@ pub async fn apply_declarative_schema(
     return Ok(false);
   }
 
-  // Apply policy.
   if let Err(e) = apply_policy(&diff_result, policy) {
     if *check_policy == SchemaCheckPolicy::Strict {
       return Err(format!("Declarative schema policy violation: {e}").into());
@@ -269,7 +256,6 @@ pub async fn apply_declarative_schema(
     return Ok(false);
   }
 
-  // Write migration file.
   let filename = new_unique_migration_filename("schema_sync");
   let stem = Path::new(&filename)
     .file_stem()
@@ -286,13 +272,11 @@ pub async fn apply_declarative_schema(
   }
   info!("Declarative schema: wrote migration {:?}", file_path);
 
-  // Apply the new migration.
   let migration = Migration::unapplied(&stem, &sql)?;
   let runner = new_migration_runner(&[migration]).set_abort_missing(false);
   let mut conn_clone = conn.clone();
   runner.run_async(&mut conn_clone).await?;
 
-  // Store updated fingerprint.
   conn
     .execute(
       format!(
@@ -306,6 +290,34 @@ pub async fn apply_declarative_schema(
 
   info!("Declarative schema: applied migration '{filename}'.");
   return Ok(true);
+}
+
+pub async fn apply_declarative_schema(
+  conn: &trailbase_sqlite::Connection,
+  schema_path: impl AsRef<Path>,
+  migration_output_dir: impl AsRef<Path>,
+  policy: &PolicyConfig,
+  check_policy: &SchemaCheckPolicy,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+  let schema_path = schema_path.as_ref();
+
+  if !schema_path.exists() {
+    debug!(
+      "Declarative schema file not found at {:?}, skipping.",
+      schema_path
+    );
+    return Ok(false);
+  }
+
+  let desired_sql = std::fs::read_to_string(schema_path)?;
+  return apply_declarative_schema_sql(
+    conn,
+    &desired_sql,
+    migration_output_dir,
+    policy,
+    check_policy,
+  )
+  .await;
 }
 
 // Base migrations contains things like file deletions table shared across main and user DBs.

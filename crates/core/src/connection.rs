@@ -11,10 +11,11 @@ pub use trailbase_sqlite::{Connection, unpack_other_error};
 
 use crate::data_dir::DataDir;
 use crate::migrations::{
-  apply_base_migrations, apply_declarative_schema, apply_logs_migrations, apply_main_migrations,
-  apply_session_migrations,
+  apply_base_migrations, apply_declarative_schema, apply_declarative_schema_sql,
+  apply_logs_migrations, apply_main_migrations, apply_session_migrations,
 };
 use crate::schema_metadata::build_metadata;
+use crate::schema_manager::SchemaStructure;
 use crate::wasm::{SqliteFunctions, SqliteStore};
 use trailbase_schema_diff::{PolicyConfig, SchemaCheckPolicy};
 
@@ -368,22 +369,43 @@ async fn init_db<'a>(
     && let Some(migrations_path) = opts.migration_path
     && let Some(traildepot_dir) = migrations_path.parent()
   {
-    let schema_path = traildepot_dir.join("schema/main.sql");
     let main_migrations_path = migrations_path.join("main");
     let policy = PolicyConfig {
       allow_destructive: false,
       allow_table_rebuild: false,
     };
 
-    apply_declarative_schema(
-      &conn,
-      &schema_path,
-      &main_migrations_path,
-      &policy,
-      &SchemaCheckPolicy::On,
-    )
-    .await
-    .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+    let system_dir = traildepot_dir.join("schema/system");
+    let app_dir = traildepot_dir.join("schema/app");
+
+    if system_dir.is_dir() && app_dir.is_dir() {
+      let schema = SchemaStructure::detect(traildepot_dir)
+        .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+      let desired_sql = schema
+        .desired_main_schema_sql()
+        .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+
+      apply_declarative_schema_sql(
+        &conn,
+        &desired_sql,
+        &main_migrations_path,
+        &policy,
+        &SchemaCheckPolicy::On,
+      )
+      .await
+      .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+    } else {
+      let schema_path = traildepot_dir.join("schema/main.sql");
+      apply_declarative_schema(
+        &conn,
+        &schema_path,
+        &main_migrations_path,
+        &policy,
+        &SchemaCheckPolicy::On,
+      )
+      .await
+      .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+    }
   }
 
   // TODO: Remove sanity check.
@@ -536,11 +558,19 @@ async fn init_db<'a>(
 
       // Apply declarative schema for org DBs if schema/org.sql exists.
       if let Some(traildepot_dir) = migrations_path.parent() {
-        let org_schema_path = traildepot_dir.join("schema/org.sql");
-        if org_schema_path.exists() {
+        let system_dir = traildepot_dir.join("schema/system");
+        let app_dir = traildepot_dir.join("schema/app");
+
+        if system_dir.is_dir() && app_dir.is_dir() {
+          let schema = SchemaStructure::detect(traildepot_dir)
+            .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+          let desired_sql = schema
+            .desired_org_schema_sql()
+            .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+
           let org_migrations_path = migrations_path.join("orgs").join(schema_name);
           std::fs::create_dir_all(&org_migrations_path).ok();
-          // Build an async Connection for  declarative schema application.
+
           let org_conn_async = trailbase_sqlite::Connection::with_opts(
             {
               let path = path.clone();
@@ -559,15 +589,50 @@ async fn init_db<'a>(
             allow_destructive: false,
             allow_table_rebuild: false,
           };
-          apply_declarative_schema(
+          apply_declarative_schema_sql(
             &org_conn_async,
-            &org_schema_path,
+            &desired_sql,
             &org_migrations_path,
             &policy,
             &SchemaCheckPolicy::On,
           )
           .await
           .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+        } else {
+          let org_schema_path = traildepot_dir.join("schema/org.sql");
+          if org_schema_path.exists() {
+            let org_migrations_path = migrations_path.join("orgs").join(schema_name);
+            std::fs::create_dir_all(&org_migrations_path).ok();
+
+            // Build an async Connection for declarative schema application.
+            let org_conn_async = trailbase_sqlite::Connection::with_opts(
+              {
+                let path = path.clone();
+                let json_registry = opts.json_registry.clone();
+                let runtimes = opts.runtimes.clone();
+                move || build_connection(Some(path.clone()), json_registry.clone(), &runtimes)
+              },
+              trailbase_sqlite::Options {
+                num_threads: Some(1),
+                ..Default::default()
+              },
+            )
+            .map_err(|e| trailbase_sqlite::Error::Other(e.into()))?;
+
+            let policy = PolicyConfig {
+              allow_destructive: false,
+              allow_table_rebuild: false,
+            };
+            apply_declarative_schema(
+              &org_conn_async,
+              &org_schema_path,
+              &org_migrations_path,
+              &policy,
+              &SchemaCheckPolicy::On,
+            )
+            .await
+            .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+          }
         }
       }
     }

@@ -123,6 +123,29 @@ impl SchemaStructure {
         ))
     }
 
+    /// Build a deterministic combined main schema for startup application.
+    ///
+    /// This intentionally omits timestamps so repeated startups do not generate
+    /// spurious fingerprints or migrations.
+    pub fn desired_main_schema_sql(&self) -> Result<String, String> {
+        let system = self.read_system_main()?;
+        let app = self.read_app_main()?;
+
+        Ok(format!(
+            "-- ============================================================\n\
+             -- TrailBase system schema\n\
+             -- Source: traildepot/schema/system/main.sql\n\
+             -- ============================================================\n\
+             {}\n\n\
+             -- ============================================================\n\
+             -- TrailBase application schema\n\
+             -- Source: traildepot/schema/app/main.sql\n\
+             -- ============================================================\n\
+             {}",
+            system, app
+        ))
+    }
+
     /// Combine system and app schemas (for org_*.db)
     pub fn combine_org_schemas(&self) -> Result<String, String> {
         let system = self.read_system_org()?;
@@ -143,6 +166,26 @@ impl SchemaStructure {
             Utc::now().to_rfc3339(),
             system,
             app
+        ))
+    }
+
+    /// Build a deterministic combined org schema for startup application.
+    pub fn desired_org_schema_sql(&self) -> Result<String, String> {
+        let system = self.read_system_org()?;
+        let app = self.read_app_org()?;
+
+        Ok(format!(
+            "-- ============================================================\n\
+             -- TrailBase system org schema\n\
+             -- Source: traildepot/schema/system/org.sql\n\
+             -- ============================================================\n\
+             {}\n\n\
+             -- ============================================================\n\
+             -- TrailBase application org schema\n\
+             -- Source: traildepot/schema/app/org.sql\n\
+             -- ============================================================\n\
+             {}",
+            system, app
         ))
     }
 
@@ -287,6 +330,7 @@ pub struct InitResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_generate_migration_filename() {
@@ -294,5 +338,39 @@ mod tests {
         assert!(filename.starts_with("U"));
         assert!(filename.ends_with(".sql"));
         assert!(filename.contains("add_user_table"));
+    }
+
+    #[test]
+    fn test_desired_combined_schema_is_deterministic() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "trailbase-schema-manager-test-{}",
+            std::process::id()
+        ));
+        let schema_dir = temp_dir.join("schema");
+        let system_dir = schema_dir.join("system");
+        let app_dir = schema_dir.join("app");
+
+        fs::create_dir_all(&system_dir).expect("system dir");
+        fs::create_dir_all(&app_dir).expect("app dir");
+
+        fs::write(system_dir.join("main.sql"), "CREATE TABLE _user(id INTEGER PRIMARY KEY);")
+            .expect("system main");
+        fs::write(system_dir.join("org.sql"), "CREATE TABLE _org(id INTEGER PRIMARY KEY);")
+            .expect("system org");
+        fs::write(app_dir.join("main.sql"), "CREATE TABLE contracts(id INTEGER PRIMARY KEY);")
+            .expect("app main");
+        fs::write(app_dir.join("org.sql"), "CREATE TABLE org_contracts(id INTEGER PRIMARY KEY);")
+            .expect("app org");
+
+        let schema = SchemaStructure::detect(&temp_dir).expect("schema structure");
+        let first = schema.desired_main_schema_sql().expect("main sql");
+        let second = schema.desired_main_schema_sql().expect("main sql again");
+
+        assert_eq!(first, second);
+        assert!(!first.contains("Last synced"));
+        assert!(first.contains("TrailBase system schema"));
+        assert!(first.contains("TrailBase application schema"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }
