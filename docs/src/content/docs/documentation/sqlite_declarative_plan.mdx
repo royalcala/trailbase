@@ -68,56 +68,25 @@ not a replacement for migration history.
 
 This keeps one execution path for production: the existing migration engine.
 
-## Runtime Mode Selection
+## Runtime Behavior
 
-TrailBase should support an explicit schema mode configuration.
-
-- `append` (default): current append-only behavior.
-- `declarative`: compute plan from declarative schema and materialize it into
-  a regular migration file.
-
-Implemented **configuration** shape:
-
-- config file field: `schema_mode = APPEND | DECLARATIVE`
-
-Example `config.textproto` snippet:
-
-```textproto
-schema_mode: DECLARATIVE
-```
-
-Suggested environment defaults:
-
-- dev: `declarative` optional, for fast iteration.
-- ci: `declarative` with check-only gate.
-- prod: `append` by default unless explicitly enabled.
+TrailBase applies schema sync automatically when the corresponding schema file
+is present. There is no public runtime mode toggle anymore; `plan` and `apply`
+are the operational tools for generating and materializing migrations.
 
 <Aside type="note" title="Single Production Execution Path">
-  Even in declarative mode, TrailBase should apply schema changes only through
-  the existing migration pipeline and history table, not via a separate direct
-  schema mutator.
+  Schema changes still go through the existing migration pipeline and history
+  table, not through a separate direct schema mutator.
 </Aside>
 
 ## Startup Behavior
 
-Startup behavior should remain operationally identical to today: TrailBase
-applies pending migrations during startup.
+Startup behavior remains operationally simple: TrailBase applies pending
+migrations during startup and also runs schema sync when the matching schema
+file exists.
 
-Mode-specific behavior:
-
-1. `append` mode:
-   - Load and apply pending migrations as today.
-2. `declarative` mode:
-   - Check whether declarative schema has changed.
-   - If changed, generate a migration plan and run policy checks.
-   - Materialize approved plan as `U<timestamp>__schema_sync.sql`.
-   - Continue with standard migration application.
-
-The same mode is also respected on config reloads, so a long-running server
-does not silently drift back to append-only behavior after SIGHUP.
-
-This preserves user expectations around startup and avoids introducing a second
-runtime migration path.
+That keeps the runtime path singular while still letting `plan`/`apply`
+materialize schema-driven changes into the normal migration history.
 
 ## Startup Performance (Fast Path)
 
@@ -288,14 +257,15 @@ trail declarative apply --db main --schema traildepot/schema/main.sql
 trail declarative apply --db main --schema traildepot/schema/main.sql --allow-destructive
 ```
 
-Suggested runtime check policy:
+Current runtime behavior is simpler than the original plan:
 
-- `off`: skip declarative startup checks.
-- `on`: run checks when fingerprint changed.
-- `strict`: fail startup on unsupported or unsafe schema diffs.
+- schema sync runs automatically when a corresponding schema file is present,
+- fingerprinting skips unnecessary diffs,
+- CLI `plan`/`apply` remain the explicit operator tools,
+- destructive changes still require explicit opt-in flags.
 
 ## Recommendation
 
-Proceed with dual-mode integration and a TrailBase-specific SQLite adapter.
-Do not replace append-only migrations. Treat declarative mode as an opt-in
-planning and migration-generation capability.
+Keep the schema-driven flow as the native path for schema evolution.
+Treat `plan` and `apply` as the review and materialization tools that feed the
+normal append-only migration history.

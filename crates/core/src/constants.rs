@@ -4,6 +4,9 @@ use trailbase_schema::QualifiedName;
 
 pub const SQLITE_SCHEMA_TABLE: &str = "sqlite_schema";
 pub const USER_TABLE: &str = "_user";
+pub const ORG_TABLE: &str = "_org";
+pub const ORG_MEMBERSHIP_TABLE: &str = "_org_membership";
+pub const ORG_INVITATION_TABLE: &str = "_org_invitation";
 pub static USER_TABLE_FQ: LazyLock<QualifiedName> = LazyLock::new(|| QualifiedName {
   name: USER_TABLE.to_string(),
   database_schema: cfg_select! {
@@ -34,6 +37,7 @@ pub const COOKIE_OAUTH_STATE: &str = "oauth_state";
 // naming: https://datatracker.ietf.org/doc/html/draft-saintandre-xdash-00
 pub const HEADER_REFRESH_TOKEN: &str = "Refresh-Token";
 pub const HEADER_CSRF_TOKEN: &str = "CSRF-Token";
+pub const HEADER_ORG_ID: &str = "X-Org-Id";
 
 pub const DEFAULT_AUTH_TOKEN_TTL: Duration =
   Duration::minutes(if cfg!(debug_assertions) { 2 } else { 60 });

@@ -156,7 +156,15 @@ pub async fn mint_auth_token(
   // NOTE: we just discard the refresh token.
   let auth_token_ttl = chrono::Duration::hours(12);
   let refresh_token_ttl = chrono::Duration::hours(12);
-  let tokens = mint_new_tokens(session_conn, &db_user, &auth_token_ttl, &refresh_token_ttl).await?;
+  let tokens = mint_new_tokens(
+    session_conn,
+    &db_user,
+    &auth_token_ttl,
+    &refresh_token_ttl,
+    None,
+    None,
+  )
+  .await?;
 
   let auth_token = jwt
     .encode(&tokens.auth_token_claims)

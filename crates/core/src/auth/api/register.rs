@@ -15,6 +15,7 @@ use crate::auth::util::{user_exists, validate_and_normalize_email_address, valid
 use crate::constants::USER_TABLE;
 use crate::email::Email;
 use crate::extract::Either;
+use crate::org::create_org_for_user;
 use crate::util::urlencode;
 
 #[derive(Debug, Default, Deserialize, IntoParams)]
@@ -133,6 +134,12 @@ pub async fn register_user_handler(
 
   let claims =
     EmailVerificationTokenClaims::new(&user.uuid(), user.email.clone(), chrono::Duration::hours(4));
+
+  let auth_user = crate::auth::user::User::from_db_user(&user);
+  let _default_org = create_org_for_user(&state, &auth_user, "Personal")
+    .await
+    .map_err(|err| AuthError::Internal(err.into()))?;
+
   let token = state
     .jwt()
     .encode(&claims)

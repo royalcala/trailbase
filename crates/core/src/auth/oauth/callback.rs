@@ -136,6 +136,8 @@ async fn callback_from_oauth_provider_setting_token_cookies(
     &db_user,
     &auth_token_ttl,
     &refresh_token_ttl,
+    crate::org::default_org_id_for_user(state, &db_user.uuid()).await?,
+    None,
   )
   .await?;
 
@@ -278,7 +280,7 @@ async fn get_or_create_user(
 
   // Look-up user in local DB to decide whether to create a new one.
   if let Some(existing_user) = user_by_provider_id(
-    state.user_conn(),
+    state.user_conn().as_ref(),
     oauth_user.provider_id,
     oauth_user.provider_user_id.clone(),
   )
@@ -292,7 +294,7 @@ async fn get_or_create_user(
   };
 
   // Otherwise, create a new user and return that.
-  let db_user = create_user_for_external_provider(state.user_conn(), &oauth_user).await?;
+  let db_user = create_user_for_external_provider(state.user_conn().as_ref(), &oauth_user).await?;
 
   // This should never happen. We only ever create a new local user here for verified users above.
   if !db_user.verified {

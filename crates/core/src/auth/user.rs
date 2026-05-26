@@ -75,6 +75,9 @@ pub struct User {
 
   /// The "expected" CSRF token as included in the auth token claims [User] was constructed from.
   pub csrf_token: String,
+
+  /// Current organization context carried by the auth token, if any.
+  pub org_id: Option<String>,
 }
 
 impl PartialEq for User {
@@ -94,7 +97,18 @@ impl User {
       email: claims.email,
       uuid,
       csrf_token: claims.csrf_token,
+      org_id: claims.org_id,
     });
+  }
+
+  pub(crate) fn from_db_user(db_user: &DbUser) -> Self {
+    return Self {
+      id: crate::util::uuid_to_b64(&db_user.uuid()),
+      email: db_user.email.clone(),
+      uuid: db_user.uuid(),
+      csrf_token: crate::rand::random_alphanumeric(20),
+      org_id: None,
+    };
   }
 
   #[cfg(test)]
@@ -112,6 +126,7 @@ impl User {
       email: email.to_string(),
       uuid: user_id,
       csrf_token: crate::rand::random_alphanumeric(20),
+      org_id: None,
     };
   }
 }

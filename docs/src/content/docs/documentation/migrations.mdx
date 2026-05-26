@@ -49,25 +49,15 @@ generate migrations for you and instantly apply them.
   The migration state is tracked in the `main._schema_history` table.
 </Aside>
 
-## Declarative Schema Workflow (Optional)
+## Schema-Driven Workflow
 
-Besides creating migrations manually, TrailBase also supports an optional
-declarative SQLite workflow.
+Besides creating migrations manually, TrailBase also supports a schema-driven
+SQLite workflow.
 
-In this mode, you define the desired schema in `traildepot/schema/main.sql`
-and let TrailBase compute and materialize migrations for you.
+Define the desired schema in `traildepot/schema/main.sql` and let TrailBase
+compute and materialize migrations for you.
 
-### 1. Enable Declarative Mode
-
-Set the config field in `traildepot/config/config.textproto`:
-
-```textproto
-schema_mode: DECLARATIVE
-```
-
-`APPEND` remains the default if this field is omitted.
-
-### 2. Plan and Review Schema Drift
+### 1. Plan and Review Schema Drift
 
 ```sh
 trail declarative plan --db main --schema traildepot/schema/main.sql
@@ -79,7 +69,7 @@ For CI checks, fail the job whenever drift exists:
 trail declarative plan --db main --schema traildepot/schema/main.sql --check
 ```
 
-### 3. Materialize and Apply
+### 2. Materialize and Apply
 
 ```sh
 trail declarative apply --db main --schema traildepot/schema/main.sql
@@ -89,14 +79,32 @@ This does not bypass migrations. TrailBase writes a regular migration file
 (`U<timestamp>__schema_sync.sql`) and applies it through the normal migration
 pipeline.
 
-### 4. Runtime Behavior
+### 3. Runtime Behavior
 
-With `schema_mode: DECLARATIVE`, startup and `SIGHUP` reloads will also run the
-declarative sync path.
+Startup and `SIGHUP` reloads also run schema sync for `main.sql` when present.
+
+### 4. Multi-Org Runtime Behavior
+
+TrailBase can operate with one SQLite DB per organization in addition to
+`main.db`.
+
+- `main.db` is the primary database.
+- For org-scoped requests, TrailBase attaches the corresponding org DB (for
+  example `org_<slug>.db`) at runtime.
+- If `traildepot/schema/org.sql` is present,
+  TrailBase applies schema sync for each org DB when it is opened.
+- Generated org migrations are written under
+  `traildepot/migrations/orgs/<org_db_name>/`.
+
+To reduce drift after deploys, TrailBase may also run a startup sweep over
+existing org DBs so they are migrated before traffic arrives.
+
+The lazy open path remains necessary as a safety net for orgs created after
+startup.
 
 <Aside type="note" title="Safety and Rollouts">
-  Declarative mode still follows append-only migration history. Destructive
-  schema changes require explicit opt-in flags when using `apply`.
+  Schema-driven sync still follows append-only migration history. Destructive
+  schema changes require explicit opt-in flags when using CLI `apply`.
 </Aside>
 
 For implementation details and design rationale, see

@@ -232,7 +232,8 @@ pub async fn login_otp_handler(
     return Err(AuthError::Unauthorized);
   };
 
-  let db_user = get_user_by_id(state.user_conn(), &Uuid::from_bytes(user_id)).await?;
+  let conn = state.user_conn();
+  let db_user = get_user_by_id(conn.as_ref(), &Uuid::from_bytes(user_id)).await?;
 
   return build_auth_token_flow_response(
     &state,

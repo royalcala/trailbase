@@ -245,3 +245,18 @@ La conclusion final es:
 - Resolver autorizacion por org activa + rol/membership.
 
 Este enfoque balancea simplicidad mental, rendimiento real en SQLite y escalabilidad operativa para el escenario objetivo.
+
+## 12) Estado de implementacion
+
+El modo multi-org ya quedo planteado como comportamiento nativo del sistema.
+
+- Registro: crea el usuario y provisiona su org inicial.
+- Login/refresh: incluyen `current_org_id` como contexto por defecto en el JWT/response.
+- API de orgs: expone listado y creacion de orgs en `/api/auth/v1/orgs`.
+- Contexto por request: `X-Org-Id` selecciona la org activa cuando existe una membresia valida.
+- Routing de datos: el contexto de org se resuelve en tiempo de request y se usa para abrir la DB correspondiente.
+- Migraciones: `main.db` y cada DB de org comparten el schema base de orgs y memberships.
+
+Regla de uso:
+- No existe un "modo especial" de producto; multi-org es el comportamiento normal.
+- Cualquier flag de rollout, si aparece, debe ser solo tecnico e interno.
