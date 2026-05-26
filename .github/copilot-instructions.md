@@ -138,13 +138,125 @@ Ahí ves:
 - Tags generados
 - Push exitoso o errores
 
-### Ejemplo: Usar GitHub Actions para multi-org
+---
 
-Mismo flujo que usamos hoy en server-1, pero sin SSH:
+## Arquitectura de Esquemas (system/ vs app/)
 
-1. Merge `syntrix-multi-org` → `syntrix-main` ✅ (ya hecho)
-2. Push a remoto ✅ (ya hecho)
-3. Ve a GitHub Actions
-4. Click `Run workflow` (usa defaults: ghcr.io, royalcala/trailbase, latest+sha)
-5. Espera ~40 min
-6. Verifica: https://ghcr.io/royalcala/trailbase:latest tiene multi-org support
+> **Decisión arquitectónica**: Separación explícita entre esquemas generados por TrailBase (siempre sincronizados) vs esquemas de aplicación (usuario-editables).
+
+### Contexto
+
+TrailBase crea internamente tablas del sistema (_user, _org, _org_membership, sessions, etc). Estas son críticas pero típicamente ocultas en el CLI. En Syntrix (y en cualquier cliente que use TrailBase custom), queremos:
+- ✅ **Transparencia**: Ver exactamente qué crea TrailBase
+- ✅ **Versionado**: Cada cambio queda en Git con audit trail
+- ✅ **Sincronización**: Detectar cuando TrailBase evoluciona
+- ✅ **Educación**: Separación clara qué es sistema vs qué es negocio
+
+### Estructura
+
+```
+traildepot/schema/
+├── system/                        # ⚠️ Autogenerado por 'trail schema export'
+│   ├── main.sql                   # Sistema: _user, _org, _org_membership, _session, etc
+│   └── org.sql                    # Sistema org-scoped (vacío o mínimo)
+│
+└── app/                           # ✅ Código de aplicación (edita aquí)
+    ├── main.sql                   # Negocio: contracts, properties, tenants, etc
+    └── org.sql                    # Negocio org-scoped: org_contracts, org_properties, etc
+```
+
+### CLI Integration
+
+El CLI de TrailBase entiende esta estructura:
+
+1. **`trail schema export`** → Genera `system/main.sql` (tablas del sistema)
+2. **`trail declarative plan/apply`** → Compara `app/main.sql + app/org.sql` contra DB actual
+3. **`trail migration`** → Crea archivos en `migrations/main/` y `migrations/orgs/`
+
+### Flujo de Sincronización
+
+**Cuando TrailBase actualiza** (nueva versión del binary o custom changes):
+
+```bash
+# 1. Extraer nuevos esquemas del sistema
+trail schema export > traildepot/schema/system/main.sql
+
+# 2. Ver cambios
+git diff traildepot/schema/system/main.sql
+
+# 3. Commitear (auditoría)
+git add traildepot/schema/system/main.sql
+git commit -m "chore(trailbase): sync system schemas v1.2.3 → v1.3.0"
+```
+
+**Cuando TÚ actualizas esquema de negocio**:
+
+```bash
+# 1. Edita app/main.sql o app/org.sql
+vim traildepot/schema/app/main.sql
+
+# 2. Planifica cambios
+trail declarative plan --db main --schema traildepot/schema/app/main.sql
+
+# 3. Aplica migrations
+trail declarative apply --db main --schema traildepot/schema/app/main.sql
+
+# 4. Commit
+git add traildepot/schema/app/
+git commit -m "feat(schema): add new business table"
+```
+
+### Relación con Migrations
+
+- **Migrations** (`migrations/main/U*.sql`) → Append-only history, version control para schema evolution
+- **Declarative schema** (`schema/app/main.sql`) → Source of truth para estado deseado
+- **System schema** (`schema/system/main.sql`) → Immutable reference, actualizado cuando TrailBase evoluciona
+
+TrailBase materializa la diferencia: `app/*` - `system/*` = `migrations/` que se necesitan.
+
+### Multi-Org Behavior
+
+Con TrailBase custom multi-org:
+
+```
+traildepot/
+├── schema/
+│   ├── system/
+│   │   ├── main.sql        # Sistema main.db
+│   │   └── org.sql         # Sistema org_*.db
+│   └── app/
+│       ├── main.sql        # Negocio main.db
+│       └── org.sql         # Negocio org_*.db
+│
+├── migrations/
+│   ├── main/               # Migraciones para main.db
+│   │   └── U*.sql
+│   └── orgs/               # Per-org migrations (lazy created)
+│       └── org_<slug>/
+│           └── U*.sql
+│
+└── data/
+    ├── main.db             # Base de datos principal
+    ├── org_slug1.db        # Org 1 database
+    └── org_slug2.db        # Org 2 database
+```
+
+TrailBase aplica `schema/system/org.sql + schema/app/org.sql` a cada org DB cuando se abre (lazy o startup sweep).
+
+### Best Practices
+
+1. **Nunca edites `system/` manualmente** — será sobrescrito
+2. **Siempre commitea `system/` changes** — auditoría de evolución de TrailBase
+3. **Migraciones destructivas** — Requieren `--destructive` flag explícito
+4. **Schema-driven workflow** — Prefiere `schema/app/` + `trail declarative apply` sobre migrations manuales para cambios reversibles
+5. **Monitorea diffs** — `git diff schema/system/main.sql` después de actualizar TrailBase para detectar cambios incompatibles
+
+### Ventajas en Syntrix (cliente)
+
+En el proyecto Syntrix que usa este TrailBase custom:
+- CLI `just sync-trailbase-schemas` automatiza la sincronización
+- Documentación clara de qué es sistema vs negocio
+- Git history completo de evolución de ambos
+- Fácil reproducir estructura en otros ambientes
+
+
