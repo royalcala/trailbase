@@ -518,22 +518,43 @@ async fn init_db<'a>(
     && let Some(migrations_path) = opts.migration_path
     && let Some(traildepot_dir) = migrations_path.parent()
   {
-    let schema_path = traildepot_dir.join("schema/main.sql");
     let main_migrations_path = migrations_path.join("main");
     let policy = PolicyConfig {
       allow_destructive: false,
       allow_table_rebuild: false,
     };
 
-    apply_declarative_schema(
-      &conn,
-      &schema_path,
-      &main_migrations_path,
-      &policy,
-      &SchemaCheckPolicy::On,
-    )
-    .await
-    .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+    let system_dir = traildepot_dir.join("schema/system");
+    let app_dir = traildepot_dir.join("schema/app");
+
+    if system_dir.is_dir() && app_dir.is_dir() {
+      let schema = SchemaStructure::detect(traildepot_dir)
+        .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+      let desired_sql = schema
+        .desired_main_schema_sql()
+        .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+
+      apply_declarative_schema_sql(
+        &conn,
+        &desired_sql,
+        &main_migrations_path,
+        &policy,
+        &SchemaCheckPolicy::On,
+      )
+      .await
+      .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+    } else {
+      let schema_path = traildepot_dir.join("schema/main.sql");
+      apply_declarative_schema(
+        &conn,
+        &schema_path,
+        &main_migrations_path,
+        &policy,
+        &SchemaCheckPolicy::On,
+      )
+      .await
+      .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+    }
   }
 
   for AttachedDatabase { schema_name, path } in &opts.attach {
@@ -854,6 +875,164 @@ mod tests {
 
     assert!(exists);
     assert!(schema_sync_migration_count(&migrations_path) >= 1);
+
+    let _ = std::fs::remove_dir_all(root);
+  }
+
+  #[cfg(not(feature = "pg"))]
+  #[tokio::test]
+  async fn startup_prefers_system_app_layout_over_legacy_main_schema() {
+    let root = make_temp_test_dir("layout-precedence-main");
+    let data_path = root.join("data").join("main.db");
+    let migrations_path = root.join("migrations");
+    let schema_dir = root.join("schema");
+    let system_dir = schema_dir.join("system");
+    let app_dir = schema_dir.join("app");
+
+    std::fs::create_dir_all(root.join("data")).expect("data dir");
+    std::fs::create_dir_all(&migrations_path).expect("migrations dir");
+    std::fs::create_dir_all(&schema_dir).expect("schema dir");
+    std::fs::create_dir_all(&system_dir).expect("system dir");
+    std::fs::create_dir_all(&app_dir).expect("app dir");
+
+    // New layout (must win)
+    std::fs::write(
+      system_dir.join("main.sql"),
+      "CREATE TABLE tb_system_only(id INTEGER PRIMARY KEY);",
+    )
+    .expect("write system/main.sql");
+    std::fs::write(
+      app_dir.join("main.sql"),
+      "CREATE TABLE tb_app_only(id INTEGER PRIMARY KEY);",
+    )
+    .expect("write app/main.sql");
+
+    // Legacy file must be ignored when system/app exists.
+    // If the legacy path were used, this invalid SQL would fail startup.
+    std::fs::write(
+      schema_dir.join("main.sql"),
+      "THIS IS INVALID SQL AND MUST NOT BE PARSED",
+    )
+    .expect("write legacy schema/main.sql");
+
+    let registry = Arc::new(RwLock::new(
+      trailbase_schema::registry::build_json_schema_registry(vec![]).expect("registry"),
+    ));
+
+    let (_conn, _metadata, _new_db) = init_db(InitDbOptions {
+      data_path: Some(&data_path),
+      migration_path: Some(&migrations_path),
+      is_main_db: true,
+      json_registry: &registry,
+      runtimes: &vec![],
+      attach: vec![],
+      num_threads: Some(1),
+      pg_uri: None,
+    })
+    .await
+    .expect("init db");
+
+    let _ = std::fs::remove_dir_all(root);
+  }
+
+  #[cfg(not(feature = "pg"))]
+  #[tokio::test]
+  async fn startup_prefers_system_app_layout_for_attached_org_db() {
+    let root = make_temp_test_dir("layout-precedence-org");
+    let data_path = root.join("data").join("main.db");
+    let org_db_path = root.join("data").join("org_demo.db");
+    let migrations_path = root.join("migrations");
+    let schema_dir = root.join("schema");
+    let system_dir = schema_dir.join("system");
+    let app_dir = schema_dir.join("app");
+
+    std::fs::create_dir_all(root.join("data")).expect("data dir");
+    std::fs::create_dir_all(&migrations_path).expect("migrations dir");
+    std::fs::create_dir_all(&schema_dir).expect("schema dir");
+    std::fs::create_dir_all(&system_dir).expect("system dir");
+    std::fs::create_dir_all(&app_dir).expect("app dir");
+
+    // Keep main schema minimal to avoid unrelated drift.
+    std::fs::write(schema_dir.join("main.sql"), "").expect("write legacy main");
+
+    // New org layout (must win)
+    std::fs::write(
+      system_dir.join("org.sql"),
+      "CREATE TABLE org_system_only(id INTEGER PRIMARY KEY);",
+    )
+    .expect("write system/org.sql");
+    std::fs::write(
+      app_dir.join("org.sql"),
+      "CREATE TABLE org_app_only(id INTEGER PRIMARY KEY);",
+    )
+    .expect("write app/org.sql");
+
+    // Legacy org schema (must be ignored when system/app exists)
+    std::fs::write(
+      schema_dir.join("org.sql"),
+      "CREATE TABLE org_legacy_only(id INTEGER PRIMARY KEY);",
+    )
+    .expect("write legacy org.sql");
+
+    // Ensure system/app main files exist so detect() can resolve full structure.
+    std::fs::write(system_dir.join("main.sql"), "CREATE TABLE noop_system(id INTEGER PRIMARY KEY);")
+      .expect("write system/main.sql");
+    std::fs::write(app_dir.join("main.sql"), "CREATE TABLE noop_app(id INTEGER PRIMARY KEY);")
+      .expect("write app/main.sql");
+
+    let registry = Arc::new(RwLock::new(
+      trailbase_schema::registry::build_json_schema_registry(vec![]).expect("registry"),
+    ));
+
+    let (conn, _metadata, _new_db) = init_db(InitDbOptions {
+      data_path: Some(&data_path),
+      migration_path: Some(&migrations_path),
+      is_main_db: true,
+      json_registry: &registry,
+      runtimes: &vec![],
+      attach: vec![AttachedDatabase {
+        schema_name: "org_demo".to_string(),
+        path: org_db_path,
+      }],
+      num_threads: Some(1),
+      pg_uri: None,
+    })
+    .await
+    .expect("init db");
+
+    let system_exists = conn
+      .read_query_row_get::<bool>(
+        "SELECT EXISTS(SELECT 1 FROM \"org_demo\".sqlite_schema WHERE type='table' AND name='org_system_only')",
+        (),
+        0,
+      )
+      .await
+      .expect("query")
+      .expect("value");
+
+    let app_exists = conn
+      .read_query_row_get::<bool>(
+        "SELECT EXISTS(SELECT 1 FROM \"org_demo\".sqlite_schema WHERE type='table' AND name='org_app_only')",
+        (),
+        0,
+      )
+      .await
+      .expect("query")
+      .expect("value");
+
+    let legacy_exists = conn
+      .read_query_row_get::<bool>(
+        "SELECT EXISTS(SELECT 1 FROM \"org_demo\".sqlite_schema WHERE type='table' AND name='org_legacy_only')",
+        (),
+        0,
+      )
+      .await
+      .expect("query")
+      .expect("value");
+
+    assert!(system_exists);
+    assert!(app_exists);
+    assert!(!legacy_exists);
 
     let _ = std::fs::remove_dir_all(root);
   }
