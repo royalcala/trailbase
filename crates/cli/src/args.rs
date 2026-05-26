@@ -89,6 +89,73 @@ pub enum SubCommands {
     #[command(subcommand)]
     cmd: Option<ComponentSubCommands>,
   },
+  /// Manage database schema: system/ vs app/ structure, sync, init
+  #[command(name = "schema-mgmt")]
+  SchemaMgmt {
+    #[command(subcommand)]
+    cmd: Option<SchemaMgmtSubCommands>,
+  },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum SchemaMgmtSubCommands {
+  /// Validate schema directory structure and files
+  Validate {
+    /// Show detailed validation info
+    #[arg(long)]
+    verbose: bool,
+  },
+
+  /// Show current schema state and next steps
+  Status {
+    /// Include migration history
+    #[arg(long)]
+    with_migrations: bool,
+  },
+
+  /// Extract system schemas from running database
+  SyncSystem {
+    /// Database URL (default: file:traildepot/data/main.db)
+    #[arg(long, short = 'd')]
+    db: Option<String>,
+
+    /// Force overwrite existing system/*.sql files
+    #[arg(long)]
+    force: bool,
+  },
+
+  /// Apply combined system/ + app/ schemas to main.db
+  InitMain {
+    /// Database URL (default: file:traildepot/data/main.db)
+    #[arg(long, short = 'd')]
+    db: Option<String>,
+
+    /// Drop existing database first
+    #[arg(long)]
+    destructive: bool,
+  },
+
+  /// Detect if system/ has changes
+  DetectChanges {
+    /// Show the diff
+    #[arg(long)]
+    show_diff: bool,
+  },
+
+  /// Automatically handle system/ + app/ changes end-to-end
+  AutoSync {
+    /// Database URL
+    #[arg(long, short = 'd')]
+    db: Option<String>,
+
+    /// Skip applying migrations (just plan)
+    #[arg(long)]
+    plan_only: bool,
+
+    /// Verbose output
+    #[arg(long, short = 'v')]
+    verbose: bool,
+  },
 }
 
 #[derive(Args, Clone, Debug)]

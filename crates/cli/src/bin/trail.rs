@@ -469,6 +469,43 @@ async fn async_main(
         }
       };
     }
+    SubCommands::SchemaMgmt { cmd } => {
+      use trailbase_cli::schema_command::SchemaCommand;
+      use trailbase_cli::SchemaMgmtSubCommands;
+
+      let base_dir = data_dir.root();
+      let schema_cmd = SchemaCommand::new(base_dir.clone());
+
+      match cmd {
+        Some(SchemaMgmtSubCommands::Validate { verbose }) => {
+          schema_cmd.cmd_validate(verbose).await?;
+        }
+        Some(SchemaMgmtSubCommands::Status { with_migrations }) => {
+          schema_cmd.cmd_status(with_migrations).await?;
+        }
+        Some(SchemaMgmtSubCommands::SyncSystem { db, force }) => {
+          schema_cmd.cmd_sync_system(db, force).await?;
+        }
+        Some(SchemaMgmtSubCommands::InitMain { db, destructive }) => {
+          schema_cmd.cmd_init_main(db, destructive).await?;
+        }
+        Some(SchemaMgmtSubCommands::DetectChanges { show_diff }) => {
+          schema_cmd.cmd_detect_changes(show_diff).await?;
+        }
+        Some(SchemaMgmtSubCommands::AutoSync {
+          db,
+          plan_only,
+          verbose,
+        }) => {
+          schema_cmd.cmd_auto_sync(db, plan_only, verbose).await?;
+        }
+        None => {
+          CommandLineArgs::command()
+            .find_subcommand_mut("schema-mgmt")
+            .map(|cmd| cmd.print_help());
+        }
+      };
+    }
   }
 
   return Ok(());

@@ -7,6 +7,7 @@ pub mod config;
 pub mod constants;
 pub mod logging;
 pub mod metadata;
+pub mod schema_manager;
 pub(crate) mod org;
 pub(crate) mod request_context;
 pub mod records;
