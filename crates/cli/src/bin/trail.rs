@@ -252,12 +252,12 @@ async fn async_main(
         }
         Some(AdminSubCommands::Demote { user }) => {
           let id =
-            api::cli::demote_admin_to_user(state.user_conn(), to_user_reference(user)).await?;
+            api::cli::demote_admin_to_user(&state.user_conn(), to_user_reference(user)).await?;
           println!("Demoted admin to user for '{id}'");
         }
         Some(AdminSubCommands::Promote { user }) => {
           let id =
-            api::cli::promote_user_to_admin(state.user_conn(), to_user_reference(user)).await?;
+            api::cli::promote_user_to_admin(&state.user_conn(), to_user_reference(user)).await?;
           println!("Promoted user to admin for '{id}'");
         }
         None => {
