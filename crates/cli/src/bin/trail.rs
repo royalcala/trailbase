@@ -277,31 +277,31 @@ async fn async_main(
 
       match cmd {
         Some(UserSubCommands::ChangePassword { user, password }) => {
-          let id = api::cli::change_password(state.user_conn(), to_user_reference(user), &password)
+          let id = api::cli::change_password(&state.user_conn(), to_user_reference(user), &password)
             .await?;
           println!("Updated password for '{id}'");
         }
         Some(UserSubCommands::ChangeEmail { user, new_email }) => {
           let id =
-            api::cli::change_email(state.user_conn(), to_user_reference(user), &new_email).await?;
+            api::cli::change_email(&state.user_conn(), to_user_reference(user), &new_email).await?;
           println!("Updated email for '{id}'");
         }
         Some(UserSubCommands::Add { email, password }) => {
-          api::cli::add_user(state.user_conn(), &email, &password).await?;
+          api::cli::add_user(&state.user_conn(), &email, &password).await?;
           println!("Added user '{email}'");
         }
         Some(UserSubCommands::Delete { user }) => {
-          api::cli::delete_user(state.user_conn(), to_user_reference(user.clone())).await?;
+          api::cli::delete_user(&state.user_conn(), to_user_reference(user.clone())).await?;
           println!("Deleted user '{user}'");
         }
         Some(UserSubCommands::Verify { user, verified }) => {
           let id =
-            api::cli::set_verified(state.user_conn(), to_user_reference(user), verified).await?;
+            api::cli::set_verified(&state.user_conn(), to_user_reference(user), verified).await?;
           println!("Set verified={verified} for '{id}'");
         }
         Some(UserSubCommands::InvalidateSession { user }) => {
           api::cli::invalidate_sessions(
-            state.user_conn(),
+            &state.user_conn(),
             state.session_conn(),
             to_user_reference(user.clone()),
           )
@@ -311,7 +311,7 @@ async fn async_main(
         Some(UserSubCommands::MintToken { user }) => {
           let auth_token = api::cli::mint_auth_token(
             state.data_dir(),
-            state.user_conn(),
+            &state.user_conn(),
             state.session_conn(),
             to_user_reference(user.clone()),
           )
@@ -329,7 +329,7 @@ async fn async_main(
             println!("Importing {} users.", users.len());
 
             if !dry_run {
-              api::cli::import_users(state.user_conn(), users).await?;
+              api::cli::import_users(&state.user_conn(), users).await?;
             }
           } else {
             return Err("Missing '--auth0_json' path".into());
