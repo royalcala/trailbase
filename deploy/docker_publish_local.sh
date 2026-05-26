@@ -11,6 +11,7 @@ Environment variables:
   TAGS          Comma-separated tags (default: latest,sha-<short_commit>)
   PLATFORMS     Comma-separated platforms (default: linux/amd64,linux/arm64)
   BUILDER       buildx builder name (default: trailbase-local-builder)
+  PRECHECK      true/false. true runs a fast cargo preflight check before build.
   CONTEXT       Build context (default: .)
   DOCKERFILE    Dockerfile path (default: ./Dockerfile)
   PUSH          true/false. true pushes to registry, false loads locally.
@@ -29,6 +30,7 @@ SHORT_SHA="$(git rev-parse --short HEAD)"
 TAGS="${TAGS:-latest,sha-${SHORT_SHA}}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 BUILDER="${BUILDER:-trailbase-local-builder}"
+PRECHECK="${PRECHECK:-true}"
 CONTEXT="${CONTEXT:-.}"
 DOCKERFILE="${DOCKERFILE:-./Dockerfile}"
 PUSH="${PUSH:-true}"
@@ -57,6 +59,15 @@ done
 if [[ "${#TAG_ARGS[@]}" -eq 0 ]]; then
   echo "No valid tags resolved from TAGS=${TAGS}" >&2
   exit 1
+fi
+
+if [[ "${PRECHECK}" == "true" ]]; then
+  if command -v cargo >/dev/null 2>&1; then
+    echo "Running preflight: cargo check -p trailbase-cli --bin trail"
+    RUST_BACKTRACE=1 cargo check -p trailbase-cli --bin trail
+  else
+    echo "Skipping preflight: cargo not found in PATH" >&2
+  fi
 fi
 
 echo "Publishing image from local machine"
