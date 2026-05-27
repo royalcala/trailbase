@@ -1,9 +1,99 @@
-# Copilot Instructions — trailbase (royalcala fork)
+# Copilot Instructions — syntrix-core
 
 ## Contexto del proyecto
 
-Fork de [trailbaseio/trailbase](https://github.com/trailbaseio/trailbase) en la rama `syntrix-main`.
-Imagen Docker publicada en `ghcr.io/royalcala/trailbase`.
+**syntrix-core** es el motor backend del producto Syntrix. Nació como fork de
+[trailbaseio/trailbase](https://github.com/trailbaseio/trailbase) (OSL-3.0) pero ha
+divergido lo suficiente para vivir como producto independiente. Ver [ATTRIBUTION.md](../ATTRIBUTION.md).
+
+- Repo local: `/home/alcala/Documents/github/trailbase` (nombre de carpeta legacy, el producto es syntrix-core)
+- Branch principal: `syntrix-main`
+- Imagen Docker: `ghcr.io/royalcala/trailbase` (se migrará a `ghcr.io/royalcala/syntrix-core`)
+- Crates internos aún usan nombre `trailbase` (rename pendiente, no bloqueante)
+
+### Features propias de syntrix-core vs TrailBase upstream
+
+| Feature | syntrix-core | TrailBase upstream |
+|---------|-------------|-------------------|
+| Multi-org (DB por org) | ✅ `org_<slug>.db` | ❌ |
+| Queue system (`queue.db`) | ✅ 3 tablas + admin API | ❌ |
+| Schema system/ vs app/ | ✅ Declarativo separado | ❌ |
+| CLI `schema export` 5 DBs | ✅ main/org/session/logs/queue | Parcial |
+| Admin API queue endpoints | ✅ `/api/_admin/queue/*` | ❌ |
+| SDK TS/Rust queue methods | ✅ | ❌ |
+| Admin UI Queue page | ✅ `/_/admin/queue` | ❌ |
+| OpenAPI queue endpoints | ✅ `AdminQueueApi` vía utoipa | ❌ |
+
+### Stack
+
+- **Runtime**: Rust + Axum + SQLite (via trailbase-sqlite wrapper)
+- **Admin UI**: SolidJS + TanStack Table + utoipa (OpenAPI)
+- **CLI**: `trail` binary (crate `trailbase-cli`)
+- **SDKs**: TypeScript (`crates/assets/js/client/`), Rust (`crates/client/`)
+
+---
+
+## Queue System (syntrix-core feature)
+
+> Sistema de colas persistente en `queue.db`, separado de `main.db`.
+
+### Bases de datos del sistema
+
+| DB | Archivo | Propósito |
+|----|---------|-----------|
+| main | `main.db` | Datos de aplicación + usuarios/orgs |
+| org | `org_<slug>.db` | Datos aislados por organización |
+| session | `sessions.db` | Sesiones de autenticación |
+| logs | `logs.db` | Request logs + métricas |
+| queue | `queue.db` | Jobs de trabajo asíncrono |
+
+### Tablas queue.db
+
+- `_queue_job` — job con status, priority, attempts, worker_id, lease_until
+- `_queue_job_attempt` — historial de cada intento
+- `_queue_dead_letter` — jobs fallidos tras max_attempts
+
+### Admin API endpoints
+
+```
+GET /api/_admin/queue/jobs   → ListQueueJobsResponse  (hasta 200 jobs recientes)
+GET /api/_admin/queue/stats  → QueueStatsResponse     (totales por status)
+```
+
+Ambos endpoints están documentados en OpenAPI vía `AdminQueueApi` struct (utoipa),
+wired en `crates/core/src/lib.rs` bajo `/api/_admin`.
+
+### SDK usage
+
+**TypeScript:**
+```ts
+const jobs = await client.queueJobs();   // { total_row_count, jobs[] }
+const stats = await client.queueStats(); // { total_jobs, by_status[] }
+```
+
+**Rust:**
+```rust
+let jobs = client.queue_jobs().await?;
+let stats = client.queue_stats().await?;
+```
+
+### Admin UI
+
+Ruta: `/_/admin/queue` — tabla de jobs + cards de stats por status.
+Ícono en sidebar: `TbOutlineListDetails`.
+
+### Archivos clave — Queue
+
+| Archivo | Propósito |
+|---------|-----------|
+| `crates/core/migrations/queue/V1__initial.sql` | Schema inicial embebido |
+| `crates/core/src/admin/queue/list_jobs.rs` | Handler GET /queue/jobs |
+| `crates/core/src/admin/queue/stats.rs` | Handler GET /queue/stats |
+| `crates/core/src/admin/queue/mod.rs` | OpenAPI `AdminQueueApi` struct |
+| `crates/core/src/connection.rs` | `init_queue_db()` |
+| `crates/core/src/migrations.rs` | `apply_queue_migrations()` |
+| `crates/assets/js/admin/src/components/queue/QueuePage.tsx` | Admin UI page |
+| `crates/assets/js/admin/src/lib/api/queue.ts` | Admin UI API calls |
 
 ---
 
@@ -49,7 +139,7 @@ Variables configurables del script (`deploy/docker_publish_local.sh`):
 | Variable     | Default                       | Descripción                        |
 |--------------|-------------------------------|------------------------------------|
 | `REGISTRY`   | `ghcr.io`                     | Registry destino                   |
-| `IMAGE_NAME` | `royalcala/trailbase`         | Nombre de la imagen                |
+| `IMAGE_NAME` | `royalcala/trailbase`         | Nombre de la imagen (→ syntrix-core pending) |
 | `TAGS`       | `latest,sha-<shortsha>`       | Tags separados por coma            |
 | `PLATFORMS`  | `linux/amd64,linux/arm64`     | Plataformas target                 |
 | `BUILDER`    | `trailbase-local-builder`     | buildx builder                     |
@@ -132,25 +222,11 @@ El workflow:
 https://github.com/royalcala/trailbase/actions/workflows/docker-publish.yml
 ```
 
-Ahí ves:
-- Estado del workflow (en ejecución, completado, fallido)
-- Logs en vivo de cada paso
-- Tags generados
-- Push exitoso o errores
-
 ---
 
 ## Arquitectura de Esquemas (system/ vs app/)
 
-> **Decisión arquitectónica**: Separación explícita entre esquemas generados por TrailBase (siempre sincronizados) vs esquemas de aplicación (usuario-editables).
-
-### Contexto
-
-TrailBase crea internamente tablas del sistema (_user, _org, _org_membership, sessions, etc). Estas son críticas pero típicamente ocultas en el CLI. En Syntrix (y en cualquier cliente que use TrailBase custom), queremos:
-- ✅ **Transparencia**: Ver exactamente qué crea TrailBase
-- ✅ **Versionado**: Cada cambio queda en Git con audit trail
-- ✅ **Sincronización**: Detectar cuando TrailBase evoluciona
-- ✅ **Educación**: Separación clara qué es sistema vs qué es negocio
+> **Decisión arquitectónica**: Separación explícita entre esquemas generados por syntrix-core (siempre sincronizados) vs esquemas de aplicación (usuario-editables).
 
 ### Estructura
 
@@ -158,7 +234,10 @@ TrailBase crea internamente tablas del sistema (_user, _org, _org_membership, se
 traildepot/schema/
 ├── system/                        # ⚠️ Autogenerado por 'trail schema export'
 │   ├── main.sql                   # Sistema: _user, _org, _org_membership, _session, etc
-│   └── org.sql                    # Sistema org-scoped (vacío o mínimo)
+│   ├── org.sql                    # Sistema org-scoped
+│   ├── session.sql                # Sistema sessions.db
+│   ├── logs.sql                   # Sistema logs.db
+│   └── queue.sql                  # Sistema queue.db
 │
 └── app/                           # ✅ Código de aplicación (edita aquí)
     ├── main.sql                   # Negocio: contracts, properties, tenants, etc
@@ -167,63 +246,50 @@ traildepot/schema/
 
 ### CLI Integration
 
-El CLI de TrailBase entiende esta estructura:
-
-1. **`trail schema export`** → Genera `system/main.sql` (tablas del sistema)
+1. **`trail schema export`** → Genera `system/*.sql` (tablas del sistema, 5 bases de datos)
 2. **`trail declarative plan/apply`** → Compara `app/main.sql + app/org.sql` contra DB actual
 3. **`trail migration`** → Crea archivos en `migrations/main/` y `migrations/orgs/`
 
 ### Flujo de Sincronización
 
-**Cuando TrailBase actualiza** (nueva versión del binary o custom changes):
+**Cuando syntrix-core actualiza**:
 
 ```bash
 # 1. Extraer nuevos esquemas del sistema
-trail schema export > traildepot/schema/system/main.sql
+trail schema export --db all --output traildepot/schema/system/
 
 # 2. Ver cambios
-git diff traildepot/schema/system/main.sql
+git diff traildepot/schema/system/
 
 # 3. Commitear (auditoría)
-git add traildepot/schema/system/main.sql
-git commit -m "chore(trailbase): sync system schemas v1.2.3 → v1.3.0"
+git add traildepot/schema/system/
+git commit -m "chore(syntrix-core): sync system schemas vX.Y.Z"
 ```
 
 **Cuando TÚ actualizas esquema de negocio**:
 
 ```bash
 # 1. Edita app/main.sql o app/org.sql
-vim traildepot/schema/app/main.sql
-
 # 2. Planifica cambios
 trail declarative plan --db main --schema traildepot/schema/app/main.sql
-
 # 3. Aplica migrations
 trail declarative apply --db main --schema traildepot/schema/app/main.sql
-
 # 4. Commit
 git add traildepot/schema/app/
 git commit -m "feat(schema): add new business table"
 ```
 
-### Relación con Migrations
-
-- **Migrations** (`migrations/main/U*.sql`) → Append-only history, version control para schema evolution
-- **Declarative schema** (`schema/app/main.sql`) → Source of truth para estado deseado
-- **System schema** (`schema/system/main.sql`) → Immutable reference, actualizado cuando TrailBase evoluciona
-
-TrailBase materializa la diferencia: `app/*` - `system/*` = `migrations/` que se necesitan.
-
 ### Multi-Org Behavior
-
-Con TrailBase custom multi-org:
 
 ```
 traildepot/
 ├── schema/
 │   ├── system/
 │   │   ├── main.sql        # Sistema main.db
-│   │   └── org.sql         # Sistema org_*.db
+│   │   ├── org.sql         # Sistema org_*.db
+│   │   ├── session.sql     # Sistema sessions.db
+│   │   ├── logs.sql        # Sistema logs.db
+│   │   └── queue.sql       # Sistema queue.db
 │   └── app/
 │       ├── main.sql        # Negocio main.db
 │       └── org.sql         # Negocio org_*.db
@@ -236,27 +302,33 @@ traildepot/
 │           └── U*.sql
 │
 └── data/
-    ├── main.db             # Base de datos principal
-    ├── org_slug1.db        # Org 1 database
-    └── org_slug2.db        # Org 2 database
+    ├── main.db
+    ├── queue.db
+    ├── org_slug1.db
+    └── org_slug2.db
 ```
-
-TrailBase aplica `schema/system/org.sql + schema/app/org.sql` a cada org DB cuando se abre (lazy o startup sweep).
 
 ### Best Practices
 
 1. **Nunca edites `system/` manualmente** — será sobrescrito
-2. **Siempre commitea `system/` changes** — auditoría de evolución de TrailBase
+2. **Siempre commitea `system/` changes** — auditoría de evolución de syntrix-core
 3. **Migraciones destructivas** — Requieren `--destructive` flag explícito
-4. **Schema-driven workflow** — Prefiere `schema/app/` + `trail declarative apply` sobre migrations manuales para cambios reversibles
-5. **Monitorea diffs** — `git diff schema/system/main.sql` después de actualizar TrailBase para detectar cambios incompatibles
+4. **Schema-driven workflow** — Prefiere `schema/app/` + `trail declarative apply` sobre migrations manuales
 
-### Ventajas en Syntrix (cliente)
+---
 
-En el proyecto Syntrix que usa este TrailBase custom:
-- CLI `just sync-trailbase-schemas` automatiza la sincronización
-- Documentación clara de qué es sistema vs negocio
-- Git history completo de evolución de ambos
-- Fácil reproducir estructura en otros ambientes
+## Migración pendiente: trailbase → syntrix-core (nombres internos)
 
+Los crates internos aún se llaman `trailbase`, `trailbase-cli`, etc.
+El rename es un refactor grande — se hará cuando el delta con upstream lo justifique.
 
+### Checklist del rename (cuando se decida hacer)
+
+- [ ] `Cargo.toml` root + todos los `crates/*/Cargo.toml` (`name = "trailbase*"` → `"syntrix-*"`)
+- [ ] `use trailbase::` → `use syntrix_core::` en todo el workspace
+- [ ] Binary name en `crates/cli/Cargo.toml`: `trail` → `syntrix`
+- [ ] Dockerfile `ENTRYPOINT`
+- [ ] GitHub Actions workflows
+- [ ] `deploy/install.sh` y `deploy/install.ps1`
+- [ ] Docker image: `ghcr.io/royalcala/trailbase` → `ghcr.io/royalcala/syntrix-core`
+- [ ] Constantes internas: `AUTH_API_PATH`, `ADMIN_API_PATH` etc. (opcionales, no user-facing)
