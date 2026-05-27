@@ -357,6 +357,17 @@ pub(crate) fn apply_session_migrations(
   return Ok(());
 }
 
+pub(crate) fn apply_queue_migrations(
+  queue_conn: &mut rusqlite::Connection,
+) -> Result<(), RefineryError> {
+  apply_migrations(
+    "queue",
+    queue_conn,
+    vec![load_embedded_migrations::<QueueMigrations>()],
+  )?;
+  return Ok(());
+}
+
 pub(crate) fn apply_migrations(
   name: &str,
   conn: &mut rusqlite::Connection,
@@ -568,6 +579,10 @@ struct LogsMigrations;
 #[derive(Clone, rust_embed::RustEmbed)]
 #[folder = "migrations/session"]
 struct SessionMigrations;
+
+#[derive(Clone, rust_embed::RustEmbed)]
+#[folder = "migrations/queue"]
+struct QueueMigrations;
 
 #[cfg(test)]
 mod tests {

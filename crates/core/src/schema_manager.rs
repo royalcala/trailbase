@@ -18,6 +18,9 @@ pub struct SchemaStructure {
     pub base_dir: PathBuf,
     pub system_main: PathBuf,
     pub system_org: PathBuf,
+    pub system_session: PathBuf,
+    pub system_logs: PathBuf,
+    pub system_queue: PathBuf,
     pub app_main: PathBuf,
     pub app_org: PathBuf,
     pub migrations_main: PathBuf,
@@ -49,6 +52,9 @@ impl SchemaStructure {
             base_dir: base_dir.to_path_buf(),
             system_main: system_dir.join("main.sql"),
             system_org: system_dir.join("org.sql"),
+            system_session: system_dir.join("session.sql"),
+            system_logs: system_dir.join("logs.sql"),
+            system_queue: system_dir.join("queue.sql"),
             app_main: app_dir.join("main.sql"),
             app_org: app_dir.join("org.sql"),
             migrations_main: migrations_dir.join("main"),
@@ -298,6 +304,9 @@ impl SchemaStructure {
         println!("│ 📁 System Schemas (auto-generated):");
         println!("│   • system/main.sql  - Core TrailBase tables (_user, _org, etc)");
         println!("│   • system/org.sql   - Org-scoped system tables");
+        println!("│   • system/session.sql - Session DB schema snapshot");
+        println!("│   • system/logs.sql    - Logs DB schema snapshot");
+        println!("│   • system/queue.sql   - Queue DB schema snapshot");
         println!("│");
         println!("│ 📝 Application Schemas (user-editable):");
         println!("│   • app/main.sql     - Business logic tables (contracts, properties, etc)");

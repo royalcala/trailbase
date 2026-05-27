@@ -8,6 +8,7 @@ import {
   TbOutlineChartDots3,
   TbOutlineTimeline,
   TbOutlineSettings,
+  TbOutlineListDetails,
 } from "solid-icons/tb";
 
 import { AuthButton } from "@/components/auth/AuthButton";
@@ -37,6 +38,7 @@ const options = [
   [`${BASE}/erd`, TbOutlineChartDots3, "Entity Relationship Diagram"],
   [`${BASE}/auth`, TbOutlineUsers, "User Accounts"],
   [`${BASE}/logs`, TbOutlineTimeline, "Logs & Metrics"],
+  [`${BASE}/queue`, TbOutlineListDetails, "Queue"],
   [`${BASE}/settings/`, TbOutlineSettings, "Settings"],
 ] as const;
 

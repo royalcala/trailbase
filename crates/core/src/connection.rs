@@ -12,7 +12,7 @@ pub use trailbase_sqlite::{Connection, unpack_other_error};
 use crate::data_dir::DataDir;
 use crate::migrations::{
   apply_base_migrations, apply_declarative_schema, apply_declarative_schema_sql,
-  apply_logs_migrations, apply_main_migrations, apply_session_migrations,
+  apply_logs_migrations, apply_main_migrations, apply_queue_migrations, apply_session_migrations,
 };
 use crate::schema_metadata::build_metadata;
 use crate::schema_manager::SchemaStructure;
@@ -704,6 +704,24 @@ pub fn init_session_db(data_dir: Option<&DataDir>) -> Result<Connection, trailba
       trailbase_extension::register_all_extension_functions(&conn, None)?;
 
       apply_session_migrations(&mut conn)
+        .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
+
+      return Ok(conn);
+    },
+    Default::default(),
+  );
+}
+
+pub fn init_queue_db(data_dir: Option<&DataDir>) -> Result<Connection, trailbase_sqlite::Error> {
+  let path = data_dir.map(|d| d.queue_db_path());
+
+  return trailbase_sqlite::Connection::with_opts(
+    || -> Result<_, trailbase_sqlite::Error> {
+      let mut conn = connect_rusqlite_without_default_extensions_and_schemas(path.clone())?;
+
+      trailbase_extension::register_all_extension_functions(&conn, None)?;
+
+      apply_queue_migrations(&mut conn)
         .map_err(|err| trailbase_sqlite::Error::Other(err.into()))?;
 
       return Ok(conn);

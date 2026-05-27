@@ -114,6 +114,38 @@ export type FetchOptions = RequestInit & {
   throwOnError?: boolean;
 };
 
+export type QueueJob = {
+  id: string;
+  queue: string;
+  job_type: string;
+  status: string;
+  priority: number;
+  attempts: number;
+  max_attempts: number;
+  run_at: number;
+  lease_until?: number;
+  worker_id?: string;
+  org_id?: string;
+  last_error?: string;
+  created: number;
+  updated: number;
+};
+
+export type QueueJobsResponse = {
+  total_row_count: number;
+  jobs: QueueJob[];
+};
+
+export type QueueStatusCount = {
+  status: string;
+  count: number;
+};
+
+export type QueueStatsResponse = {
+  total_jobs: number;
+  by_status: QueueStatusCount[];
+};
+
 export class FetchError extends Error {
   public status: number;
   public url: string | URL | undefined;
@@ -203,6 +235,12 @@ export interface Client {
     operations: (CreateOperation | UpdateOperation | DeleteOperation)[],
     transaction?: boolean,
   ): Promise<RecordId[]>;
+
+  /// Admin: list queue jobs.
+  queueJobs(): Promise<QueueJobsResponse>;
+
+  /// Admin: get queue statistics.
+  queueStats(): Promise<QueueStatsResponse>;
 }
 
 /// Client for interacting with TrailBase auth and record APIs.
@@ -273,6 +311,16 @@ class ClientImpl implements Client {
     });
 
     return parseJSON(await response.text()).ids;
+  }
+
+  async queueJobs(): Promise<QueueJobsResponse> {
+    const response = await this.fetch("/api/_admin/queue/jobs");
+    return response.json();
+  }
+
+  async queueStats(): Promise<QueueStatsResponse> {
+    const response = await this.fetch("/api/_admin/queue/stats");
+    return response.json();
   }
 
   public avatarUrl(userId?: string): string | undefined {

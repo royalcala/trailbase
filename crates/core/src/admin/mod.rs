@@ -8,6 +8,7 @@ mod jwt;
 mod logs;
 mod oauth_providers;
 mod parse;
+pub(crate) mod queue;
 mod query;
 pub(crate) mod rows;
 mod table;
@@ -62,6 +63,9 @@ pub fn router() -> Router<AppState> {
     .route("/logs/list", get(logs::list_logs::list_logs_handler))
     // Stats
     .route("/logs/stats", get(logs::stats::fetch_stats_handler))
+    // Queue
+    .route("/queue/jobs", get(queue::list_jobs::list_queue_jobs_handler))
+    .route("/queue/stats", get(queue::stats::queue_stats_handler))
     // Query execution handler for the UI editor
     .route("/query", post(query::query_handler))
     // Parse handler for UI validation.

@@ -151,6 +151,43 @@ pub struct ListResponse<T> {
   pub records: Vec<T>,
 }
 
+/// Queue job as returned by the admin API.
+#[derive(Clone, Debug, Deserialize)]
+pub struct QueueJob {
+  pub id: String,
+  pub queue: String,
+  pub job_type: String,
+  pub status: String,
+  pub priority: i64,
+  pub attempts: i64,
+  pub max_attempts: i64,
+  pub run_at: f64,
+  pub lease_until: Option<f64>,
+  pub worker_id: Option<String>,
+  pub org_id: Option<String>,
+  pub last_error: Option<String>,
+  pub created: f64,
+  pub updated: f64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QueueJobsResponse {
+  pub total_row_count: i64,
+  pub jobs: Vec<QueueJob>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QueueStatusCount {
+  pub status: String,
+  pub count: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QueueStatsResponse {
+  pub total_jobs: i64,
+  pub by_status: Vec<QueueStatusCount>,
+}
+
 pub trait RecordId<'a> {
   fn serialized_id(self) -> Cow<'a, str>;
 }
@@ -1059,6 +1096,36 @@ impl Client {
     return response_or.map(|_| ());
   }
 
+  /// Admin: list queue jobs.
+  pub async fn queue_jobs(&self) -> Result<QueueJobsResponse, Error> {
+    let response = self
+      .state
+      .fetch(
+        &format!("/{ADMIN_API}/queue/jobs"),
+        Method::GET,
+        None,
+        None,
+        /* error_for_status= */ true,
+      )
+      .await?;
+    return json(response).await;
+  }
+
+  /// Admin: get queue statistics.
+  pub async fn queue_stats(&self) -> Result<QueueStatsResponse, Error> {
+    let response = self
+      .state
+      .fetch(
+        &format!("/{ADMIN_API}/queue/stats"),
+        Method::GET,
+        None,
+        None,
+        /* error_for_status= */ true,
+      )
+      .await?;
+    return json(response).await;
+  }
+
   fn update_tokens(&self, tokens: Option<&Tokens>) -> TokenState {
     let state = TokenState::build(tokens);
 
@@ -1191,6 +1258,7 @@ fn error_for_status_unpack(
 
 const AUTH_API: &str = "api/auth/v1";
 const RECORD_API: &str = "api/records/v1";
+const ADMIN_API: &str = "api/_admin";
 
 #[cfg(test)]
 mod tests {

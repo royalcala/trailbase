@@ -77,6 +77,7 @@ function NotFoundPage() {
 
 const LazyEditorPage = lazy(() => import("@/components/editor/EditorPage"));
 const LazyLogsPage = lazy(() => import("@/components/logs/LogsPage"));
+const LazyQueuePage = lazy(() => import("@/components/queue/QueuePage"));
 const LazyErdPage = lazy(() => import("@/components/erd/ErdPage"));
 
 const App: Component = () => {
@@ -103,6 +104,7 @@ const App: Component = () => {
           <Route path="/editor" component={LazyEditorPage} />
           <Route path="/erd" component={LazyErdPage} />
           <Route path="/logs" component={LazyLogsPage} />
+          <Route path="/queue" component={LazyQueuePage} />
           <Route path="/settings/:group?" component={SettingsPage} />
 
           {/* fallback: */}

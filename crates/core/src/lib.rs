@@ -133,6 +133,7 @@ pub mod openapi {
         nest(
             (path = "/api/auth/v1", api = crate::auth::AuthApi),
             (path = "/api/records/v1", api = crate::records::RecordOpenApi),
+            (path = "/api/_admin", api = crate::admin::queue::AdminQueueApi),
         ),
         tags(),
     )]

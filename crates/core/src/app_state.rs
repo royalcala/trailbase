@@ -46,6 +46,7 @@ struct InternalState {
   conn: Arc<trailbase_sqlite::Connection>,
   session_conn: trailbase_sqlite::Connection,
   logs_conn: trailbase_sqlite::Connection,
+  queue_conn: trailbase_sqlite::Connection,
   connection_manager: ConnectionManager,
 
   jwt: JwtHelper,
@@ -79,6 +80,7 @@ pub(crate) struct AppStateArgs {
   pub json_schema_registry: Arc<parking_lot::RwLock<JsonSchemaRegistry>>,
   pub session_conn: trailbase_sqlite::Connection,
   pub logs_conn: trailbase_sqlite::Connection,
+  pub queue_conn: trailbase_sqlite::Connection,
   pub connection_manager: ConnectionManager,
   pub jwt: JwtHelper,
   pub object_store: Box<dyn ObjectStore>,
@@ -193,6 +195,7 @@ impl AppState {
         conn: main_conn.clone(),
         session_conn: args.session_conn,
         logs_conn: args.logs_conn,
+        queue_conn: args.queue_conn,
         connection_manager: args.connection_manager,
         jwt: args.jwt,
         record_apis: record_apis.clone(),
@@ -257,6 +260,10 @@ impl AppState {
 
   pub fn logs_conn(&self) -> &trailbase_sqlite::Connection {
     return &self.state.logs_conn;
+  }
+
+  pub fn queue_conn(&self) -> &trailbase_sqlite::Connection {
+    return &self.state.queue_conn;
   }
 
   pub fn connection_manager(&self) -> ConnectionManager {
@@ -565,6 +572,7 @@ pub async fn test_state(options: Option<TestStateOptions>) -> anyhow::Result<App
 
   let logs_conn = crate::connection::init_logs_db(None)?;
   let session_conn = crate::connection::init_session_db(None)?;
+  let queue_conn = crate::connection::init_queue_db(None)?;
 
   let connection_manager = ConnectionManager::new_for_test(
     data_dir.clone(),
@@ -621,6 +629,7 @@ pub async fn test_state(options: Option<TestStateOptions>) -> anyhow::Result<App
       conn: connection_manager.main_entry().connection.clone(),
       session_conn,
       logs_conn,
+      queue_conn,
       connection_manager,
       jwt: crate::auth::jwt::test_jwt_helper(),
       record_apis: record_apis.clone(),
